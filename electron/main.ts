@@ -1,6 +1,3 @@
-import { resolveDisplayMediaSource } from "./ipc/register/sourceMapping";
-import { createSaveBeforeCloseController } from "./saveBeforeClose";
-import { clearRecordingTrashUndo } from "./ipc/recording/library";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -18,9 +15,27 @@ import {
 	systemPreferences,
 	Tray,
 } from "electron";
-import { RECORDINGS_DIR } from "./appPaths";
+import { nativeT, setNativeLocale } from "./nativeI18n";
+import {
+	captureEditorMenuTarget,
+	createEditorCommandMenus,
+	withHiddenDockEditorMenus,
+	type ProjectMenuAction,
+} from "./editorCommandMenu";
+import { validateAppLocaleRequest } from "./localeIpc";
+import { readAppSetting, writeAppSetting } from "./appSettingsStore";
+import { refreshDesktopPresenceLocale } from "./desktopPresence";
+import { initializeInstanceSession, RECORDINGS_DIR } from "./appPaths";
+import { activateFromDesktopIcon } from "./appActivation";
+import { getUpdatePresentation } from "./updatePresentation";
 import { createAuthCallbackController } from "./authCallback";
 import { showCursor } from "./cursorHider";
+import {
+	desktopPresenceNeedsTray,
+	initializeDesktopPresence,
+	setDesktopPresenceRecording,
+	stopRecordingFromDesktopIcon,
+} from "./desktopPresence";
 import { getGpuSwitches } from "./gpuSwitches";
 import {
 	cleanupAllExportStreams,
@@ -29,16 +44,26 @@ import {
 	killWindowsCaptureProcess,
 	registerIpcHandlers,
 } from "./ipc/handlers";
+import { recordingFocus } from "./ipc/recording/focus";
+import { clearRecordingTrashUndo } from "./ipc/recording/library";
+import { resolveDisplayMediaSource } from "./ipc/register/sourceMapping";
 import { ensureMediaServer } from "./mediaServer";
-import { hardenWebContentsNavigation, shouldHardenWebContentsType } from "./navigationPolicy";
+import {
+	hardenWebContentsNavigation,
+	isInternalRendererTarget,
+	shouldHardenWebContentsType,
+} from "./navigationPolicy";
 import { shouldGrantDisplayCapture, shouldGrantMediaPermission } from "./permissionPolicy";
+import { createReleaseVersionCatalog } from "./releaseVersions";
 import { ensurePackagedRendererServer, getPackagedRendererBaseUrl } from "./rendererServer";
+import { createSaveBeforeCloseController } from "./saveBeforeClose";
 import {
 	checkForAppUpdates,
 	deferUpdateReminder,
 	dismissUpdateToast,
 	downloadAvailableUpdate,
 	getCurrentUpdateToastPayload,
+	getAutomaticUpdateDownloadsEnabled,
 	getExperimentalUpdatesEnabled,
 	getUpdaterLogPath,
 	getUpdateStatusSummary,
@@ -46,25 +71,31 @@ import {
 	previewNativeUpdateDialog,
 	previewUpdateToast,
 	setExperimentalUpdatesEnabled,
+	setAutomaticUpdateDownloadsEnabled,
 	setupAutoUpdates,
+	showUpdateNotificationOnOpen,
 	skipAvailableUpdateVersion,
 } from "./updater";
 import {
+	beginHudCaptureProtection,
+	closeOnboardingWindow,
 	createEditorWindow,
 	createHudOverlayWindow,
 	createSourceSelectorWindow,
 	getHudOverlayWindow,
+	getOnboardingWindow,
 	getUpdateToastWindow,
 	hideUpdateToastWindow,
 	isHudOverlayMousePassthroughSupported,
-	beginHudCaptureProtection,
 	reassertHudOverlayMousePassthrough as reassertHudOverlayMouseState,
 	setHudOverlayRecordingActive,
+	showOnboardingWindow,
 	showUpdateToastWindow,
 } from "./windows";
 
 const electronMainDir = path.dirname(fileURLToPath(import.meta.url));
 const IS_SMOKE_EXPORT = process.env.RECORDLY_SMOKE_EXPORT === "1";
+initializeInstanceSession();
 
 function ignoreBrokenConsolePipe(stream: NodeJS.WritableStream | undefined) {
 	stream?.on("error", (error: NodeJS.ErrnoException) => {
@@ -74,6 +105,15 @@ function ignoreBrokenConsolePipe(stream: NodeJS.WritableStream | undefined) {
 		throw error;
 	});
 }
+
+ipcMain.handle("show-onboarding-window", (_event, options?: { preview?: boolean }) => {
+	showOnboardingWindow({ preview: !app.isPackaged && options?.preview === true });
+	return true;
+});
+ipcMain.handle("close-onboarding-window", () => {
+	closeOnboardingWindow();
+	return true;
+});
 
 ignoreBrokenConsolePipe(process.stdout);
 ignoreBrokenConsolePipe(process.stderr);
@@ -135,7 +175,7 @@ async function ensureRecordingsDir() {
 // │ │
 // │ ├─┬ dist-electron
 // │ │ ├── main.js
-// │ │ └── preload.mjs
+// │ │ └── preload.js
 // │
 process.env.APP_ROOT = path.join(electronMainDir, "..");
 
@@ -164,6 +204,20 @@ function getTrustedCaptureDocumentBaseUrls(): string[] {
 	return trustedUrls;
 }
 
+ipcMain.handle("set-app-locale", (event, locale: unknown) => {
+	if (!validateAppLocaleRequest(event, locale, getTrustedCaptureDocumentBaseUrls())) {
+		throw new Error("Invalid app locale request");
+	}
+	setNativeLocale(locale);
+	writeAppSetting("recordly.locale", locale);
+	setupApplicationMenu();
+	updateTrayMenu(desktopRecordingActive);
+	refreshDesktopPresenceLocale();
+	const onboarding = getOnboardingWindow();
+	if (onboarding && !onboarding.isDestroyed()) onboarding.setTitle(nativeT("welcome"));
+	return true;
+});
+
 function isHudWebContents(webContents: Electron.WebContents | null): boolean {
 	if (!webContents || webContents.isDestroyed()) {
 		return false;
@@ -180,22 +234,38 @@ let tray: Tray | null = null;
 let trayContextMenu: Menu | null = null;
 let selectedSourceName = "";
 let editorHasUnsavedChanges = false;
+const exportingRenderers = new Set<number>();
+const observedExportRenderers = new WeakSet<Electron.WebContents>();
 let isForceClosing = false;
 let isAppQuitting = false;
 let isCreatingMainWindow = false;
 let isCreatingEditorWindow = false;
-const shouldEnforceSingleInstanceLock = !IS_DEV;
-const hasSingleInstanceLock = shouldEnforceSingleInstanceLock
-	? app.requestSingleInstanceLock()
-	: true;
-
-if (!hasSingleInstanceLock) {
-	app.quit();
-}
+// Multiple app instances are supported. Recording handlers acquire the OS
+// instance lock only while a recording is starting or capturing.
 
 const authCallbacks = createAuthCallbackController({
 	isDev: IS_DEV,
 	focusApp: () => focusOrCreateMainWindow(),
+});
+
+app.on("open-url", (event, rawUrl) => {
+	try {
+		const url = new URL(rawUrl);
+		if (
+			url.protocol !== `${authCallbacks.protocol}:` ||
+			url.hostname !== "billing" ||
+			url.pathname !== "/return" ||
+			url.username ||
+			url.password ||
+			url.search ||
+			url.hash
+		)
+			return;
+		event.preventDefault();
+		if (app.isReady()) focusOrCreateMainWindow();
+	} catch {
+		// Ignore malformed URLs; no callback can grant a billing entitlement.
+	}
 });
 
 function closeEditorWindowBypassingUnsavedPrompt(window: BrowserWindow | null) {
@@ -314,6 +384,25 @@ ipcMain.on("set-has-unsaved-changes", (_event, hasChanges: boolean) => {
 	editorHasUnsavedChanges = hasChanges;
 });
 
+ipcMain.on("set-export-in-progress", (event, active: unknown) => {
+	const window = BrowserWindow.fromWebContents(event.sender);
+	if (!window || !isEditorWindow(window) || typeof active !== "boolean") return;
+	const id = event.sender.id;
+	if (active) {
+		if (!observedExportRenderers.has(event.sender)) {
+			observedExportRenderers.add(event.sender);
+			event.sender.once("destroyed", () => exportingRenderers.delete(id));
+		}
+		exportingRenderers.add(id);
+	} else {
+		exportingRenderers.delete(id);
+	}
+});
+
+function canRestartForUpdate() {
+	return !desktopRecordingActive && !editorHasUnsavedChanges && exportingRenderers.size === 0;
+}
+
 function createWindow() {
 	if (!app.isReady()) {
 		void app.whenReady().then(() => {
@@ -344,6 +433,7 @@ function createWindow() {
 	const createdHudWindow = createHudOverlayWindow();
 	mainWindow = createdHudWindow;
 	createdHudWindow.once("closed", () => {
+		recordingFocus.stop();
 		if (mainWindow === createdHudWindow) {
 			mainWindow = null;
 		}
@@ -352,6 +442,11 @@ function createWindow() {
 }
 
 function focusOrCreateMainWindow() {
+	const onboarding = getOnboardingWindow();
+	if (onboarding) {
+		restoreWindowSafely(onboarding);
+		return;
+	}
 	if (!app.isReady()) {
 		void app.whenReady().then(() => {
 			focusOrCreateMainWindow();
@@ -420,9 +515,23 @@ function isEditorWindow(window: BrowserWindow) {
 	return window.webContents.getURL().includes("windowType=editor");
 }
 
-function sendEditorMenuAction(
-	channel: "menu-load-project" | "menu-save-project" | "menu-save-project-as",
-) {
+function isOwnedEditorWindow(window: BrowserWindow): boolean {
+	return (
+		!window.isDestroyed() &&
+		BrowserWindow.fromId(window.id) === window &&
+		!window.webContents.isDestroyed() &&
+		isEditorWindow(window) &&
+		getTrustedCaptureDocumentBaseUrls().some((base) =>
+			isInternalRendererTarget(base, window.webContents.getURL()),
+		)
+	);
+}
+
+function sendEditorMenuAction(channel: ProjectMenuAction, capturedTarget?: BrowserWindow) {
+	if (capturedTarget) {
+		if (isOwnedEditorWindow(capturedTarget)) capturedTarget.webContents.send(channel);
+		return;
+	}
 	let targetWindow = BrowserWindow.getFocusedWindow() ?? mainWindow;
 
 	if (!targetWindow || targetWindow.isDestroyed() || !isEditorWindow(targetWindow)) {
@@ -446,87 +555,67 @@ function sendEditorMenuAction(
 function setupApplicationMenu() {
 	const isMac = process.platform === "darwin";
 	const template: Electron.MenuItemConstructorOptions[] = [];
+	const editorMenus = createEditorCommandMenus({
+		translate: nativeT,
+		onProjectAction: sendEditorMenuAction,
+	});
+	if (!isMac)
+		editorMenus[0].submenu.push(
+			{ type: "separator" },
+			{ label: nativeT("quit"), role: "quit", accelerator: "CmdOrCtrl+Q" },
+		);
 	if (isMac) {
 		template.push({
 			label: app.name,
 			submenu: [
-				{ role: "about" },
+				{ label: nativeT("about"), role: "about" },
 				{ type: "separator" },
-				{ role: "services" },
+				{ label: nativeT("services"), role: "services" },
 				{ type: "separator" },
-				{ role: "hide" },
-				{ role: "hideOthers" },
-				{ role: "unhide" },
+				{ label: nativeT("hide"), role: "hide" },
+				{ label: nativeT("hideOthers"), role: "hideOthers" },
+				{ label: nativeT("unhide"), role: "unhide" },
 				{ type: "separator" },
-				{ role: "quit" },
+				{ label: nativeT("quit"), role: "quit" },
 			],
 		});
 	}
 
 	template.push(
+		...editorMenus,
 		{
-			label: "File",
+			label: nativeT("view"),
 			submenu: [
-				{
-					label: "Open Projects…",
-					accelerator: "CmdOrCtrl+O",
-					click: () => sendEditorMenuAction("menu-load-project"),
-				},
-				{
-					label: "Save Project…",
-					accelerator: "CmdOrCtrl+S",
-					click: () => sendEditorMenuAction("menu-save-project"),
-				},
-				{
-					label: "Save Project As…",
-					accelerator: "CmdOrCtrl+Shift+S",
-					click: () => sendEditorMenuAction("menu-save-project-as"),
-				},
-				...(isMac
-					? []
-					: [
-							{ type: "separator" as const },
-							{ role: "quit" as const, accelerator: "CmdOrCtrl+Q" },
-						]),
+				{ label: nativeT("reload"), role: "reload" },
+				{ label: nativeT("forceReload"), role: "forceReload" },
+				{ label: nativeT("toggleDevTools"), role: "toggleDevTools" },
+				{ type: "separator" },
+				{ label: nativeT("resetZoom"), role: "resetZoom" },
+				{ label: nativeT("zoomIn"), role: "zoomIn" },
+				{ label: nativeT("zoomOut"), role: "zoomOut" },
+				{ type: "separator" },
+				{ label: nativeT("toggleFullscreen"), role: "togglefullscreen" },
 			],
 		},
 		{
-			label: "Edit",
-			submenu: [
-				{ role: "undo" },
-				{ role: "redo" },
-				{ type: "separator" },
-				{ role: "cut" },
-				{ role: "copy" },
-				{ role: "paste" },
-				{ role: "selectAll" },
-			],
-		},
-		{
-			label: "View",
-			submenu: [
-				{ role: "reload" },
-				{ role: "forceReload" },
-				{ role: "toggleDevTools" },
-				{ type: "separator" },
-				{ role: "resetZoom" },
-				{ role: "zoomIn" },
-				{ role: "zoomOut" },
-				{ type: "separator" },
-				{ role: "togglefullscreen" },
-			],
-		},
-		{
-			label: "Window",
+			label: nativeT("window"),
 			submenu: isMac
-				? [{ role: "minimize" }, { role: "zoom" }, { type: "separator" }, { role: "front" }]
-				: [{ role: "minimize" }, { role: "close" }],
+				? [
+						{ label: nativeT("minimize"), role: "minimize" },
+						{ label: nativeT("zoom"), role: "zoom" },
+						{ type: "separator" },
+						{ label: nativeT("front"), role: "front" },
+					]
+				: [
+						{ label: nativeT("minimize"), role: "minimize" },
+						{ label: nativeT("close"), role: "close" },
+					],
 		},
 		{
-			label: "Help",
+			label: nativeT("help"),
 			submenu: [
 				{
-					label: "Check for Updates…",
+					label: nativeT("checkUpdates"),
 					click: () => {
 						void checkForAppUpdates(getUpdateDialogWindow, { manual: true });
 					},
@@ -547,18 +636,45 @@ function isPrimaryTrayClick(event: unknown) {
 	return button === undefined || button === 0 || button === "left";
 }
 
+function activateDesktopEntryPoint() {
+	activateFromDesktopIcon({
+		stopRecording: stopRecordingFromDesktopIcon,
+		getPriorityWindow: () => {
+			const onboarding = getOnboardingWindow();
+			if (onboarding) return onboarding;
+			const updateToast = getUpdateToastWindow();
+			return updateToast?.isVisible() ? updateToast : null;
+		},
+		getHudWindow: getHudOverlayWindow,
+		showHud: () => {
+			showHudOverlayFromTray();
+		},
+		showMain: focusOrCreateMainWindow,
+	});
+	if (app.isReady() && !desktopRecordingActive && !getOnboardingWindow()) {
+		notifyAboutUpdateOnOpen = true;
+		if (!showUpdateNotificationOnOpen(getUpdateDialogWindow, sendUpdateToastToWindows)) {
+			void checkForAppUpdates(getUpdateDialogWindow);
+		}
+	}
+}
+
 function createTray() {
 	tray = new Tray(getDefaultTrayIcon());
+	if (process.platform === "darwin") tray.setIgnoreDoubleClickEvents(true);
+	const activate = activateDesktopEntryPoint;
 	tray.on("click", (event) => {
-		if (process.platform === "win32" && !isPrimaryTrayClick(event)) {
+		if (!isPrimaryTrayClick(event)) {
 			return;
 		}
 
-		focusOrCreateMainWindow();
+		activate();
 	});
 
-	if (process.platform === "win32") {
+	if (process.platform === "win32" || process.platform === "darwin") {
 		tray.on("right-click", () => {
+			if (process.platform === "darwin" && app.dock && !app.dock.isVisible())
+				updateTrayMenu(desktopRecordingActive);
 			if (!tray || !trayContextMenu) {
 				return;
 			}
@@ -568,13 +684,11 @@ function createTray() {
 		return;
 	}
 
-	tray.on("double-click", () => focusOrCreateMainWindow());
+	tray.on("double-click", activate);
 }
 
 function shouldUseTray() {
-	// macOS and Windows expose Recordly through their Dock/taskbar. Keep the
-	// tray entry only on Linux, where it remains the primary app entry point.
-	return process.platform === "linux";
+	return process.platform === "linux" || desktopPresenceNeedsTray();
 }
 
 function getPublicAssetPath(filename: string) {
@@ -598,14 +712,53 @@ function syncDockIcon() {
 		return;
 	}
 
-	const dockIcon = getAppImage(getPlatformAppIconFilename(512));
+	const dockIcon = getAppImage(
+		IS_DEV ? "app-icons/recordly-solid-blue-512.png" : getPlatformAppIconFilename(512),
+	);
 	if (!dockIcon.isEmpty()) {
 		app.dock.setIcon(dockIcon);
 	}
 }
 
-function sendUpdateToastToWindows(channel: "update-toast-state", payload: unknown) {
-	if (process.platform !== "darwin") {
+let notifyAboutUpdateOnOpen = true;
+
+function sendUpdateToastToWindows(
+	channel: "update-toast-state",
+	payload: ReturnType<typeof getCurrentUpdateToastPayload>,
+) {
+	const hud = getHudOverlayWindow();
+	const editorVisible = Boolean(
+		mainWindow &&
+			mainWindow !== hud &&
+			!mainWindow.isDestroyed() &&
+			mainWindow.isVisible() &&
+			!mainWindow.isMinimized(),
+	);
+	for (const window of BrowserWindow.getAllWindows()) {
+		if (!window.isDestroyed() && window !== getUpdateToastWindow()) {
+			window.webContents.send(channel, payload);
+		}
+	}
+	const presentation = getUpdatePresentation({
+		phase: payload?.phase,
+		recording: desktopRecordingActive,
+		editorVisible,
+		notifyOnOpen: notifyAboutUpdateOnOpen,
+		platform: process.platform,
+		notificationVisible: getUpdateToastWindow()?.isVisible() ?? false,
+		automaticDownloads: getAutomaticUpdateDownloadsEnabled(),
+	});
+	if (!payload && getUpdateStatusSummary().status === "up-to-date") {
+		notifyAboutUpdateOnOpen = false;
+	}
+	if (presentation === "notification" || presentation === "native") {
+		notifyAboutUpdateOnOpen = false;
+	}
+	if (presentation === "silent" || presentation === "inline") {
+		hideUpdateToastWindow();
+		return true;
+	}
+	if (presentation === "native") {
 		return false;
 	}
 
@@ -620,8 +773,13 @@ function sendUpdateToastToWindows(channel: "update-toast-state", payload: unknow
 
 	const toastWindow = showUpdateToastWindow();
 	const sendPayload = () => {
+		if (toastWindow.isDestroyed() || getCurrentUpdateToastPayload() !== payload) return;
 		toastWindow.webContents.send(channel, payload);
 		showUpdateToastWindow();
+		if (payload.isPreview && (payload.phase === "ready" || payload.phase === "available")) {
+			toastWindow.show();
+			toastWindow.focus();
+		}
 	};
 
 	if (toastWindow.webContents.isLoadingMainFrame()) {
@@ -647,13 +805,13 @@ function getUpdateDialogWindow() {
 }
 
 ipcMain.handle("install-downloaded-update", () => {
-	installDownloadedUpdateNow(sendUpdateToastToWindows);
-	return { success: true };
+	return installDownloadedUpdateNow(sendUpdateToastToWindows);
 });
 
 ipcMain.handle("download-available-update", (_event, installAfterDownload?: boolean) => {
 	return downloadAvailableUpdate(sendUpdateToastToWindows, {
 		installAfterDownload: Boolean(installAfterDownload),
+		canInstall: canRestartForUpdate,
 	});
 });
 
@@ -673,12 +831,51 @@ ipcMain.handle("get-current-update-toast-payload", () => {
 	return getCurrentUpdateToastPayload();
 });
 
+const releaseVersionCatalog = createReleaseVersionCatalog(process.platform, process.arch);
+ipcMain.handle("list-release-versions", async () => {
+	if (process.windowsStore || process.mas) return { success: true, versions: [] };
+	try {
+		return { success: true, versions: await releaseVersionCatalog.list() };
+	} catch {
+		return { success: false, versions: [] };
+	}
+});
+ipcMain.handle("download-release-version", async (_event, tag: unknown) => {
+	if (process.windowsStore || process.mas) return { success: false };
+	const installer = releaseVersionCatalog.installer(tag);
+	if (!installer) return { success: false };
+	try {
+		await shell.openExternal(installer);
+		return { success: true };
+	} catch {
+		return { success: false };
+	}
+});
+
 ipcMain.handle("get-update-status-summary", () => {
 	return getUpdateStatusSummary();
 });
 
 ipcMain.handle("get-experimental-updates-enabled", () => {
 	return getExperimentalUpdatesEnabled();
+});
+
+ipcMain.handle("get-automatic-update-downloads-enabled", () =>
+	getAutomaticUpdateDownloadsEnabled(),
+);
+ipcMain.handle("set-automatic-update-downloads-enabled", (_event, enabled: unknown) => {
+	if (typeof enabled !== "boolean")
+		return { success: false, enabled: getAutomaticUpdateDownloadsEnabled() };
+	try {
+		const saved = setAutomaticUpdateDownloadsEnabled(enabled, sendUpdateToastToWindows);
+		return { success: saved === enabled, enabled: saved };
+	} catch (error) {
+		return {
+			success: false,
+			enabled: getAutomaticUpdateDownloadsEnabled(),
+			error: String(error),
+		};
+	}
 });
 
 ipcMain.handle("set-experimental-updates-enabled", async (_event, enabled: unknown) => {
@@ -701,6 +898,7 @@ ipcMain.handle("set-experimental-updates-enabled", async (_event, enabled: unkno
 });
 
 ipcMain.handle("preview-update-toast", async () => {
+	notifyAboutUpdateOnOpen = true;
 	if (process.platform !== "darwin") {
 		await previewNativeUpdateDialog(getUpdateDialogWindow);
 		return { success: true };
@@ -714,14 +912,38 @@ ipcMain.handle("check-for-app-updates", async () => {
 	return { success: true, logPath: getUpdaterLogPath() };
 });
 
+let desktopRecordingActive = false;
+
+function requestStopRecording() {
+	// Capture belongs to the HUD, which can outlive the current main/editor window.
+	for (const win of BrowserWindow.getAllWindows()) {
+		if (!win.isDestroyed() && !win.webContents.isDestroyed()) {
+			win.webContents.send("stop-recording-from-tray");
+		}
+	}
+}
+
+function refreshTrayPresence() {
+	if (shouldUseTray()) {
+		if (!tray) createTray();
+		updateTrayMenu(desktopRecordingActive);
+	} else if (tray) {
+		tray.destroy();
+		tray = null;
+		trayContextMenu = null;
+	}
+}
+
 function updateTrayMenu(recording: boolean = false) {
 	if (!tray) return;
 	const trayIcon = recording ? getRecordingTrayIcon() : getDefaultTrayIcon();
-	const trayToolTip = recording ? `Recording: ${selectedSourceName}` : "Recordly";
+	const trayToolTip = recording
+		? nativeT("stopTooltip", { source: selectedSourceName })
+		: "Recordly";
 	const menuTemplate = recording
 		? [
 				{
-					label: "Show Controls",
+					label: nativeT("showControls"),
 					click: () => {
 						if (!showHudOverlayFromTray()) {
 							focusOrCreateMainWindow();
@@ -729,17 +951,13 @@ function updateTrayMenu(recording: boolean = false) {
 					},
 				},
 				{
-					label: "Stop Recording",
-					click: () => {
-						if (mainWindow && !mainWindow.isDestroyed()) {
-							mainWindow.webContents.send("stop-recording-from-tray");
-						}
-					},
+					label: nativeT("stopRecording"),
+					click: requestStopRecording,
 				},
 			]
 		: [
 				{
-					label: "Open",
+					label: nativeT("open"),
 					click: () => {
 						if (!showHudOverlayFromTray()) {
 							focusOrCreateMainWindow();
@@ -747,17 +965,36 @@ function updateTrayMenu(recording: boolean = false) {
 					},
 				},
 				{
-					label: "Quit",
+					label: nativeT("quit"),
 					click: () => {
 						app.quit();
 					},
 				},
 			];
-	const menu = Menu.buildFromTemplate(menuTemplate);
+	const focused = BrowserWindow.getFocusedWindow();
+	const target = captureEditorMenuTarget(
+		getOnboardingWindow()
+			? null
+			: focused && isOwnedEditorWindow(focused)
+				? focused
+				: mainWindow,
+		isOwnedEditorWindow,
+	);
+	const menu = Menu.buildFromTemplate(
+		withHiddenDockEditorMenus(menuTemplate, {
+			platform: process.platform,
+			dockVisible: app.dock?.isVisible() ?? true,
+			translate: nativeT,
+			onProjectAction: sendEditorMenuAction,
+			target,
+		}),
+	);
 	trayContextMenu = menu;
 	tray.setImage(trayIcon);
 	tray.setToolTip(trayToolTip);
-	if (process.platform !== "win32") {
+	// A native macOS context menu consumes the primary click. Keep that click
+	// available for stopping capture, and open the menu on right-click instead.
+	if (process.platform === "linux") {
 		tray.setContextMenu(menu);
 	}
 }
@@ -817,7 +1054,8 @@ function createEditorWindowWrapper() {
 	});
 
 	const closeAfterSave = () => {
-		if (process.platform === "win32" && !isAppQuitting) closeEditorWindowToHud(editorWindow);
+		if (process.platform === "win32" && !isAppQuitting && !getOnboardingWindow())
+			closeEditorWindowToHud(editorWindow);
 		else closeEditorWindowBypassingUnsavedPrompt(editorWindow);
 	};
 	let closeSaveRequestId = 0;
@@ -835,11 +1073,11 @@ function createEditorWindowWrapper() {
 		offerDiscard: async () => {
 			const result = await dialog.showMessageBox(editorWindow, {
 				type: "warning",
-				buttons: ["Discard & Close", "Cancel"],
+				buttons: [nativeT("discardClose"), nativeT("cancel")],
 				defaultId: 1,
 				cancelId: 1,
-				title: "Project could not be saved",
-				message: "Saving failed or did not respond. Discard unsaved changes and close?",
+				title: nativeT("saveFailedTitle"),
+				message: nativeT("saveFailedMessage"),
 			});
 			return result.response === 0;
 		},
@@ -851,7 +1089,12 @@ function createEditorWindowWrapper() {
 	editorWindow.once("closed", closeSave.dispose);
 	editorWindow.on("close", (event) => {
 		if (isForceClosing || !editorHasUnsavedChanges) {
-			if (process.platform === "win32" && !isForceClosing && !isAppQuitting) {
+			if (
+				process.platform === "win32" &&
+				!isForceClosing &&
+				!isAppQuitting &&
+				!getOnboardingWindow()
+			) {
 				event.preventDefault();
 				closeEditorWindowToHud(editorWindow);
 			}
@@ -875,6 +1118,7 @@ function createSourceSelectorWindowWrapper() {
 // On macOS, applications and their menu bar stay active until the user quits
 // explicitly with Cmd + Q.
 app.on("before-quit", () => {
+	recordingFocus.stop();
 	isAppQuitting = true;
 	authCallbacks.close();
 	void clearRecordingTrashUndo().catch((error) =>
@@ -892,21 +1136,24 @@ app.on("window-all-closed", () => {
 	}
 });
 
-app.on("activate", () => {
-	if (getHudOverlayWindow()?.isVisible()) return;
-	// On OS X it's common to re-create a window in the app when the
-	// dock icon is clicked and there are no other windows open.
-	focusOrCreateMainWindow();
-});
+app.on("activate", activateDesktopEntryPoint);
 
-app.on("second-instance", (_event, commandLine) => {
+app.on("second-instance", async (_event, commandLine, _workingDirectory, additionalData) => {
+	if ((additionalData as { recordlyRecordingLock?: boolean })?.recordlyRecordingLock === true)
+		return;
 	const authCallback = authCallbacks.find(commandLine);
-	if (authCallback) authCallbacks.dispatch(authCallback);
-	focusOrCreateMainWindow();
+	if (authCallback) {
+		const routed = await authCallbacks.route(authCallback);
+		if (isAppQuitting) return;
+		if (routed !== "forwarded") focusOrCreateMainWindow();
+	} else {
+		activateDesktopEntryPoint();
+	}
 });
 
 // Register all IPC handlers when app is ready
 app.whenReady().then(async () => {
+	setNativeLocale(String(readAppSetting("recordly.locale") || app.getLocale()));
 	authCallbacks.startDevServer();
 	if (process.defaultApp && process.argv[1]) {
 		app.setAsDefaultProtocolClient(authCallbacks.protocol, process.execPath, [
@@ -916,9 +1163,16 @@ app.whenReady().then(async () => {
 		app.setAsDefaultProtocolClient(authCallbacks.protocol);
 	}
 	const startupAuthCallback = authCallbacks.find(process.argv);
-	if (startupAuthCallback) authCallbacks.dispatch(startupAuthCallback);
+	const routedStartupAuth = await authCallbacks.routeStartup(startupAuthCallback);
+	if (isAppQuitting) return;
+	if (routedStartupAuth === "forwarded") {
+		// A separate protocol launcher exits only after the exact existing owner
+		// accepted the callback into its private in-memory queue.
+		app.quit();
+		return;
+	}
 
-	if (process.platform === "win32") {
+	if (process.platform === "win32" && !process.windowsStore) {
 		app.setAppUserModelId("dev.recordly.app");
 	}
 
@@ -1000,14 +1254,17 @@ app.whenReady().then(async () => {
 			}
 		}, 100);
 	});
-	if (process.platform === "darwin" && app.dock) {
-		await app.dock.show();
-	}
 	syncDockIcon();
-	if (shouldUseTray()) {
-		createTray();
-		updateTrayMenu();
-	}
+	initializeDesktopPresence({
+		refreshEntryPoints: refreshTrayPresence,
+		stopRecording: requestStopRecording,
+		onRecordingOwnerLost: () => {
+			desktopRecordingActive = false;
+			setHudOverlayRecordingActive(false);
+			setDesktopPresenceRecording(false);
+		},
+		stopIcon: getAppImage("rec-button.png").resize({ width: 16, height: 16 }),
+	});
 	setupApplicationMenu();
 	await Promise.all([
 		ensureRecordingsDir(),
@@ -1032,17 +1289,15 @@ app.whenReady().then(async () => {
 		(recording: boolean, sourceName: string) => {
 			selectedSourceName = sourceName;
 			setHudOverlayRecordingActive(recording);
-			if (shouldUseTray()) {
-				if (!tray) createTray();
-				updateTrayMenu(recording);
-			}
+			desktopRecordingActive = recording;
+			setDesktopPresenceRecording(recording);
 			if (recording) {
 				reassertHudOverlayMouseState();
 			}
-			if (!recording) {
-				restoreWindowSafely(mainWindow);
-			}
+			// Idle updates also follow cancelled starts and discarded recordings.
+			// Only the explicit editor handoff should reveal/focus the editor.
 		},
+		authCallbacks.flowStorageHooks,
 	);
 
 	if (IS_SMOKE_EXPORT || process.env.RECORDLY_DEV_OPEN_RECORDING_INPUT) {
@@ -1063,7 +1318,7 @@ app.whenReady().then(async () => {
 	}
 
 	createWindow();
-	setupAutoUpdates(getUpdateDialogWindow, sendUpdateToastToWindows);
+	setupAutoUpdates(getUpdateDialogWindow, sendUpdateToastToWindows, canRestartForUpdate);
 	if (IS_DEV && process.env.RECORDLY_DEV_PREVIEW_UPDATE === "1") {
 		setTimeout(() => {
 			if (process.platform === "darwin") {
