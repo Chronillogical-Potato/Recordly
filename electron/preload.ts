@@ -228,6 +228,11 @@ contextBridge.exposeInMainWorld("electronAPI", {
 	hudOverlaySetWebcamPreviewVisible: (visible: boolean) => {
 		ipcRenderer.send("hud-overlay-set-webcam-preview-visible", visible);
 	},
+	hudOverlaySetInteractiveBounds: (
+		bounds: Array<{ left: number; top: number; right: number; bottom: number }> | null,
+	) => {
+		ipcRenderer.send("hud-overlay-set-interactive-bounds", bounds);
+	},
 	getHudOverlayCaptureProtection: () => {
 		return ipcRenderer.invoke("get-hud-overlay-capture-protection");
 	},
@@ -546,7 +551,12 @@ contextBridge.exposeInMainWorld("electronAPI", {
 	showRecordingHud: () => ipcRenderer.invoke("show-recording-hud"),
 	showOnboardingWindow: (options?: { preview?: boolean }) =>
 		ipcRenderer.invoke("show-onboarding-window", options),
+	...(process.platform === "darwin" || process.platform === "win32"
+		? { replayOnboardingIntro: () => ipcRenderer.invoke("replay-onboarding-intro") }
+		: {}),
 	closeOnboardingWindow: () => ipcRenderer.invoke("close-onboarding-window"),
+	reportOnboardingIntro: (stage: "ready" | "finished" | "skipped") =>
+		ipcRenderer.send("onboarding-intro", stage),
 	createProjectFile: (data: unknown, thumbnail?: string | null) =>
 		ipcRenderer.invoke("create-project-file", data, thumbnail),
 	renameLibraryProject: (path: string, name: string) =>
@@ -766,6 +776,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
 	openAccessibilityPreferences: (preview?: boolean) => {
 		return ipcRenderer.invoke("open-accessibility-preferences", preview);
 	},
+	suggestExportFileName: (fileName: string, sidecarFormat?: "srt" | "vtt" | "both") =>
+		ipcRenderer.invoke("suggest-export-file-name", fileName, sidecarFormat),
 	saveExportedVideo: (
 		videoData: ArrayBuffer,
 		fileName: string,

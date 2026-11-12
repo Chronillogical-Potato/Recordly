@@ -6,6 +6,7 @@ import {
 	MicrophoneSlashIcon,
 	MinusIcon,
 	MonitorIcon,
+	SpeakerHighIcon,
 	VideoCameraIcon,
 	VideoCameraSlashIcon,
 } from "@/components/ui/icons";
@@ -155,6 +156,52 @@ function LaunchWindowContent() {
 		recordingWebcamPreviewContainerRef,
 		docked: showRecordingWebcamPreview,
 	});
+
+	useEffect(() => {
+		const reportInteractiveBounds = () => {
+			const elements = [hudBarRef.current, recordingWebcamPreviewContainerRef.current].filter(
+				(element): element is HTMLDivElement => element !== null,
+			);
+
+			if (elements.length === 0) {
+				window.electronAPI?.hudOverlaySetInteractiveBounds?.(null);
+				return;
+			}
+
+			window.electronAPI?.hudOverlaySetInteractiveBounds?.(
+				elements.map((element) => {
+					const rect = element.getBoundingClientRect();
+					return {
+						left: window.screenX + rect.left,
+						top: window.screenY + rect.top,
+						right: window.screenX + rect.right,
+						bottom: window.screenY + rect.bottom,
+					};
+				}),
+			);
+		};
+
+		reportInteractiveBounds();
+		const resizeObserver = new ResizeObserver(reportInteractiveBounds);
+		if (hudBarRef.current) resizeObserver.observe(hudBarRef.current);
+		if (recordingWebcamPreviewContainerRef.current) {
+			resizeObserver.observe(recordingWebcamPreviewContainerRef.current);
+		}
+		window.addEventListener("mousemove", reportInteractiveBounds);
+		window.addEventListener("resize", reportInteractiveBounds);
+
+		return () => {
+			resizeObserver.disconnect();
+			window.removeEventListener("mousemove", reportInteractiveBounds);
+			window.removeEventListener("resize", reportInteractiveBounds);
+			window.electronAPI?.hudOverlaySetInteractiveBounds?.(null);
+		};
+	}, [
+		recordingHudOffset,
+		recordingWebcamPreviewContainerRef,
+		showRecordingWebcamPreview,
+		webcamPreview.webcamPreviewOffset,
+	]);
 
 	const { handleHudMouseEnter, handleHudMouseLeave, beginInteractiveHudAction } =
 		useLaunchHudInteractionState({
@@ -321,12 +368,8 @@ function LaunchWindowContent() {
 						size="icon"
 						iconSize="lg"
 						disabled={countdownActive}
-						title={
-							microphoneEnabled
-								? t("recording.disableMicrophone")
-								: t("recording.enableMicrophone")
-						}
-						className={microphoneEnabled ? "text-accent" : ""}
+						aria-label={t("recording.audioSettings", "Audio settings")}
+						className={microphoneEnabled || systemAudioEnabled ? "text-accent" : ""}
 					>
 						{microphoneEnabled ? (
 							<MicrophoneIcon
@@ -334,6 +377,8 @@ function LaunchWindowContent() {
 								className="size-5"
 								size={18}
 							/>
+						) : systemAudioEnabled ? (
+							<SpeakerHighIcon className="size-5" />
 						) : (
 							<MicrophoneSlashIcon className="size-5" />
 						)}
@@ -368,11 +413,7 @@ function LaunchWindowContent() {
 						size="icon"
 						iconSize="lg"
 						disabled={countdownActive}
-						title={
-							webcamEnabled
-								? t("recording.disableWebcam")
-								: t("recording.enableWebcam")
-						}
+						aria-label={t("recording.cameraSettings", "Camera settings")}
 						className={webcamEnabled ? "text-accent" : ""}
 					>
 						{webcamEnabled ? (
