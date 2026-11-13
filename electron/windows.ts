@@ -20,6 +20,7 @@ import {
 	shouldExpandHudOverlayFallback,
 } from "./hudOverlayBounds";
 import { getHudOverlayTaskbarOptions } from "./hudOverlayWindowOptions";
+import { startHudPointerRecovery } from "./hudPointerRecovery";
 import { sendNativeHudCaptureExclusions } from "./ipc/recording/nativeCaptureCommand";
 import {
 	currentProjectPath,
@@ -61,6 +62,7 @@ let hudOverlayInteractiveBounds: Array<{
 	top: number;
 	right: number;
 	bottom: number;
+	shape?: "ellipse";
 }> | null = null;
 let countdownWindow: BrowserWindow | null = null;
 let capturePickerWindows: BrowserWindow[] = [];
@@ -501,7 +503,7 @@ ipcMain.on(
 	(
 		_event,
 		bounds:
-			| Array<{ left: number; top: number; right: number; bottom: number }>
+			| Array<{ left: number; top: number; right: number; bottom: number; shape?: "ellipse" }>
 			| null
 			| undefined,
 	) => {
@@ -743,6 +745,23 @@ export function createHudOverlayWindow(): BrowserWindow {
 	// Reset the user's saved HUD position when displays change so the bar
 	// doesn't end up stranded off-screen after a monitor is disconnected.
 	const screen = getScreen();
+	const stopPointerRecovery =
+		process.platform === "win32"
+			? startHudPointerRecovery({
+					canRecover: () =>
+						!win.isDestroyed() && win.isVisible() && !hudOverlaySourceSelectionActive,
+					getCursor: () => screen.getCursorScreenPoint(),
+					getBounds: () => hudOverlayInteractiveBounds,
+					recover: () => {
+						// A sibling overlay or focus change can break forwarded mousemove.
+						// Reassert the native flag over controls even if our cached state says
+						// they are already interactive. The renderer still handles leaving,
+						// popover dismissal and drag capture as usual.
+						hudOverlayIgnoringMouse = false;
+						win.setIgnoreMouseEvents(false);
+					},
+				})
+			: () => undefined;
 	const handleDisplayRemoved = () => {
 		hudUserPosition = null;
 	};
@@ -766,6 +785,7 @@ export function createHudOverlayWindow(): BrowserWindow {
 	screen.on("display-metrics-changed", handleDisplayMetricsChanged);
 
 	win.on("closed", () => {
+		stopPointerRecovery();
 		ipcMain.removeListener("hud-overlay-renderer-ready", handleHudRendererReady);
 		screen.removeListener("display-removed", handleDisplayRemoved);
 		screen.removeListener("display-metrics-changed", handleDisplayMetricsChanged);
@@ -1060,6 +1080,7 @@ export function createEditorWindow(): BrowserWindow {
 		}),
 		minWidth: 800,
 		minHeight: 600,
+		...(!isMac && { frame: false }),
 		...(process.platform !== "darwin" && {
 			icon: WINDOW_ICON_PATH,
 		}),
@@ -1097,11 +1118,15 @@ export function createEditorWindow(): BrowserWindow {
 		if (!win.isDestroyed())
 			win.webContents.send("window-chrome-changed", {
 				trafficLightsVisible: isMac && !win.isFullScreen() && !win.isSimpleFullScreen(),
+				customControls: !isMac,
+				maximized: win.isMaximized(),
 			});
 	};
 	win.on("enter-full-screen", publishWindowChrome);
 	win.on("leave-full-screen", publishWindowChrome);
 	win.on("resize", publishWindowChrome);
+	win.on("maximize", publishWindowChrome);
+	win.on("unmaximize", publishWindowChrome);
 	win.webContents.on("did-finish-load", publishWindowChrome);
 
 	win.once("ready-to-show", () => {
@@ -1187,10 +1212,46 @@ export function getOnboardingWindow(): BrowserWindow | null {
 	return onboardingWindow && !onboardingWindow.isDestroyed() ? onboardingWindow : null;
 }
 
-function closeOtherOnboardingWindows(win: BrowserWindow) {
+function hideOtherOnboardingWindows(win: BrowserWindow) {
 	for (const other of BrowserWindow.getAllWindows()) {
-		if (other !== win && other !== onboardingIntroWindow && !other.isDestroyed()) other.close();
+		if (other !== win && other !== onboardingIntroWindow && !other.isDestroyed()) {
+			other.hide();
+		}
 	}
+}
+
+/** Keep existing windows, delayed loads and tray restores behind onboarding. */
+function enforceOnboardingWindowExclusivity(win: BrowserWindow): void {
+	const listeners = new Map<BrowserWindow, () => void>();
+	const deferredWindows = new Set<BrowserWindow>();
+	const watch = (other: BrowserWindow) => {
+		if (other === win || other.isDestroyed() || listeners.has(other)) return;
+		const hide = () => {
+			if (!win.isDestroyed() && other !== onboardingIntroWindow && !other.isDestroyed()) {
+				if (other.isVisible()) deferredWindows.add(other);
+				other.hide();
+			}
+		};
+		listeners.set(other, hide);
+		other.on("show", hide);
+		other.on("restore", hide);
+		hide();
+	};
+	const onCreated = (_event: Electron.Event, other: BrowserWindow) => watch(other);
+	app.on("browser-window-created", onCreated);
+	for (const other of BrowserWindow.getAllWindows()) watch(other);
+	win.once("closed", () => {
+		app.removeListener("browser-window-created", onCreated);
+		for (const [other, hide] of listeners) {
+			other.removeListener("show", hide);
+			other.removeListener("restore", hide);
+		}
+		// Permissions completion prepares the HUD before closing onboarding. Show
+		// that destination only after onboarding is gone, preserving existing work.
+		for (const other of deferredWindows) {
+			if (!other.isDestroyed()) other.show();
+		}
+	});
 }
 
 export function replayOnboardingIntro(owner: BrowserWindow): boolean {
@@ -1228,7 +1289,10 @@ export function replayOnboardingIntro(owner: BrowserWindow): boolean {
 	return true;
 }
 
-export function showOnboardingWindow(options?: { preview?: boolean }): BrowserWindow {
+export function showOnboardingWindow(options?: {
+	preview?: boolean;
+	intro?: boolean;
+}): BrowserWindow {
 	const query = {
 		windowType: "onboarding",
 		...(!app.isPackaged && typeof options?.preview === "boolean"
@@ -1245,7 +1309,7 @@ export function showOnboardingWindow(options?: { preview?: boolean }): BrowserWi
 		}
 	};
 	if (onboardingWindow && !onboardingWindow.isDestroyed()) {
-		closeOtherOnboardingWindows(onboardingWindow);
+		hideOtherOnboardingWindows(onboardingWindow);
 		if (!app.isPackaged && typeof options?.preview === "boolean") load(onboardingWindow, query);
 		onboardingWindow.setBounds(getOnboardingWindowBounds());
 		focusOnboardingWindow();
@@ -1277,20 +1341,19 @@ export function showOnboardingWindow(options?: { preview?: boolean }): BrowserWi
 	registerDesktopPresenceWindow(win);
 	if (process.platform !== "darwin") win.setMenu(null);
 	onboardingWindow = win;
+	enforceOnboardingWindowExclusivity(win);
 	win.once("closed", () => {
 		if (onboardingWindow === win) onboardingWindow = null;
 	});
-	// Keep onboarding alive before closing other windows to avoid window-all-closed.
-	closeOtherOnboardingWindows(win);
+	hideOtherOnboardingWindows(win);
 	const show = () => {
 		win.setBounds(bounds);
 		bringOnboardingWindowForward(win);
 	};
-	const previewIntro =
-		!app.isPackaged &&
-		options?.preview &&
-		(process.platform === "darwin" || process.platform === "win32");
-	if (previewIntro) {
+	const playIntro =
+		(process.platform === "darwin" || process.platform === "win32") &&
+		(options?.intro || (!app.isPackaged && options?.preview));
+	if (playIntro) {
 		const intro = startOnboardingIntro(
 			getScreen().getPrimaryDisplay().bounds,
 			path.join(electronWindowsDir, "preload.js"),
@@ -1591,11 +1654,22 @@ export function hideAreaRecordingBorder(): void {
 
 /** Click-through exterior strips leave the recorded pixels completely untouched. */
 export function showRecordingFocus(target: CaptureArea): void {
+	const hud = getHudOverlayWindow();
+	const protectedAreas =
+		hud?.isVisible() && !hud.isMinimized()
+			? (hudOverlayInteractiveBounds ?? []).map((rect) => ({
+					x: rect.left - 8,
+					y: rect.top - 8,
+					width: rect.right - rect.left + 16,
+					height: rect.bottom - rect.top + 16,
+				}))
+			: [];
 	const rectangles = outsideRecordingRects(
 		getScreen()
 			.getAllDisplays()
 			.map((display) => display.bounds),
 		target,
+		protectedAreas,
 	);
 	for (let i = 0; i < rectangles.length; i++) {
 		const bounds = rectangles[i];
@@ -1620,7 +1694,11 @@ export function showRecordingFocus(target: CaptureArea): void {
 			});
 			win.setIgnoreMouseEvents(true);
 			win.setContentProtection(true);
-			win.setAlwaysOnTop(true, "floating", -1);
+			win.setAlwaysOnTop(
+				true,
+				process.platform === "win32" ? "screen-saver" : "floating",
+				-1,
+			);
 			win.setVisibleOnAllWorkspaces(true, {
 				visibleOnFullScreen: true,
 				skipTransformProcessType: true,
@@ -1632,8 +1710,11 @@ export function showRecordingFocus(target: CaptureArea): void {
 					`data:text/html;charset=utf-8,${encodeURIComponent('<!DOCTYPE html><html style="margin:0;height:100%;background:rgba(0,0,0,.38)"><body style="margin:0"></body></html>')}`,
 				)
 				.then(() => {
-					if (!created.isDestroyed() && recordingFocusWindows.includes(created))
+					if (!created.isDestroyed() && recordingFocusWindows.includes(created)) {
 						created.showInactive();
+						created.setIgnoreMouseEvents(true);
+						raiseHudAboveRecordingFocus();
+					}
 				})
 				.catch(() => {
 					if (!created.isDestroyed()) created.close();
@@ -1647,10 +1728,22 @@ export function showRecordingFocus(target: CaptureArea): void {
 				old.height !== bounds.height
 			)
 				win.setBounds(bounds);
+			// Bringing the capture target forward must not leave the surround
+			// behind it. Restore hidden strips without taking keyboard focus.
+			if (process.platform === "win32") win.setAlwaysOnTop(true, "screen-saver", -1);
+			if (!win.isVisible()) win.showInactive();
+			win.setIgnoreMouseEvents(true);
 		}
 	}
 	for (const win of recordingFocusWindows.splice(rectangles.length))
 		if (!win.isDestroyed()) win.close();
+	raiseHudAboveRecordingFocus();
+}
+
+function raiseHudAboveRecordingFocus() {
+	if (capturePickerWindows.some((win) => !win.isDestroyed())) return;
+	const hud = getHudOverlayWindow();
+	if (hud?.isVisible() && !hud.isMinimized()) hud.moveTop();
 }
 
 export function hideRecordingFocus(): void {

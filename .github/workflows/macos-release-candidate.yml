@@ -86,7 +86,7 @@ jobs:
             runner: macos-15-intel
           - arch: arm64
             arch_tag: darwin-arm64
-            runner: macos-14
+            runner: macos-15
     env:
       CI: true
     steps:
@@ -95,6 +95,9 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ needs.authorize-source.outputs.source_sha }}
+
+      - name: Select Xcode for Icon Composer
+        run: sudo xcode-select --switch /Applications/Xcode_26.3.app/Contents/Developer
 
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
