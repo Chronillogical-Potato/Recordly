@@ -1,5 +1,3 @@
-import { nativeT } from "./nativeI18n";
-import { recordingEditorLoading } from "./recordingEditorLoading";
 import fs from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
@@ -29,7 +27,9 @@ import {
 	nativeCaptureProcess,
 } from "./ipc/state";
 import type { CaptureArea } from "./ipc/types";
+import { nativeT } from "./nativeI18n";
 import { startOnboardingIntro } from "./onboardingIntro";
+import { recordingEditorLoading } from "./recordingEditorLoading";
 import { outsideRecordingRects } from "./recordingFocus";
 import { getPackagedRendererBaseUrl } from "./rendererServer";
 
@@ -674,6 +674,11 @@ export function createHudOverlayWindow(): BrowserWindow {
 			applyHudOverlayCaptureProtectionToWindow(win, hudOverlayHiddenFromCapture);
 		}
 	});
+	win.on("restore", () => {
+		if (!win.isDestroyed()) {
+			win.webContents.send("hud-overlay-restored");
+		}
+	});
 
 	if (isHudOverlayMousePassthroughSupported()) {
 		if (hudOverlayRecordingActive) {
@@ -853,10 +858,10 @@ export function setHudOverlayRecordingActive(recording: boolean): void {
 	hudOverlayFallbackExpanded = false;
 	applyHudOverlayBounds();
 	reassertHudOverlayCaptureProtection();
-	// Start in passthrough mode. Forwarded pointer movement lets the renderer
-	// make the visible HUD controls interactive when the pointer reaches them,
-	// while transparent parts never block the recorded application.
-	setHudOverlayMousePassthrough(true);
+	// Keep whatever hover state the renderer last reported. Forcing passthrough
+	// here made the HUD click-through right after the user pressed record, so the
+	// stop button swallowed clicks until the pointer moved again.
+	setHudOverlayMousePassthrough(hudOverlayIgnoringMouse);
 }
 
 export function createUpdateToastWindow(): BrowserWindow {
