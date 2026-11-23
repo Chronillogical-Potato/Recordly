@@ -9,6 +9,7 @@ import { ExportProgressIndicator } from "../export/ExportProgressIndicator";
 import { getExportFileName } from "../export/exportFileName";
 import type { useExportSession } from "../export/useExportSession";
 import type { useExportStatusViewModel } from "../export/useExportStatusViewModel";
+import { GifOptimizationResult } from "../GifOptimizationResult";
 import { ExportActivityCard } from "./ExportActivityCard";
 
 type Props = {
@@ -22,6 +23,7 @@ type Props = {
 	onDismiss: () => void;
 	onRetrySave: () => void;
 	onRevealFile: () => void;
+	onRecordNew?: () => void;
 };
 
 export function EditorExportCard({
@@ -35,6 +37,7 @@ export function EditorExportCard({
 	onDismiss,
 	onRetrySave,
 	onRevealFile,
+	onRecordNew,
 }: Props) {
 	const { isExporting, exportError, exportedFilePath, hasPendingExportSave } = session;
 	const { exportDisplayProgress, exportPhaseLabel, exportHeadlines } = status;
@@ -122,10 +125,18 @@ export function EditorExportCard({
 						<CheckCircle size={14} weight="fill" aria-hidden />
 						{t("editor.exportStatus.complete", "Export complete")}
 					</p>
+					{format === "gif" && session.gifOptimization && (
+						<GifOptimizationResult summary={session.gifOptimization} />
+					)}
 					<div className="editor-export-card-actions">
 						<Button type="button" variant="outline" size="sm" onClick={onRevealFile}>
 							{t("editor.actions.showInFolder", "Show In Folder")}
 						</Button>
+						{exportedFilePath && !hasPendingExportSave && onRecordNew && (
+							<Button type="button" size="sm" onClick={onRecordNew}>
+								{t("ui.recordNew", "Record new")}
+							</Button>
+						)}
 					</div>
 				</>
 			)}

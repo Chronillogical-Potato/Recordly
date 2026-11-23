@@ -15,6 +15,7 @@ import {
 	setWindowsNativeCaptureActive,
 	setWindowsOrphanedMicAudioPath,
 	setWindowsSystemAudioPath,
+	setWindowsWindowCaptureSize,
 	windowsCaptureOutputBuffer,
 	windowsCaptureProcess,
 	windowsCaptureTargetPath,
@@ -214,7 +215,14 @@ export async function startWindowsCapture(
 			setWindowsCaptureOutputBuffer(captureOutput);
 		});
 
-		await waitForWindowsCaptureStart(wcProc);
+		const captureStart = await waitForWindowsCaptureStart(wcProc);
+		const { captureSize } = captureStart;
+		const systemAudioCaptureUnavailable =
+			options?.capturesSystemAudio === true && captureStart.systemAudioCaptureUnavailable;
+		if (systemAudioCaptureUnavailable) {
+			systemAudioPath = null;
+			setWindowsSystemAudioPath(null);
+		}
 		const microphoneFallbackRequired =
 			browserMicFallbackRequested ||
 			shouldUseWindowsBrowserMicrophoneFallback(captureOutput, options);
@@ -224,6 +232,11 @@ export async function startWindowsCapture(
 			microphonePath = null;
 			setWindowsMicAudioPath(null);
 		}
+		setWindowsWindowCaptureSize(
+			captureTarget.kind === "window" && source.id && captureSize
+				? { sourceId: source.id, ...captureSize }
+				: null,
+		);
 		setWindowsNativeCaptureActive(true);
 		setNativeScreenRecordingActive(true);
 		recordNativeCaptureDiagnostics({
@@ -240,7 +253,7 @@ export async function startWindowsCapture(
 			microphonePath,
 			processOutput: captureOutput.trim() || undefined,
 		});
-		return { success: true, microphoneFallbackRequired };
+		return { success: true, microphoneFallbackRequired, systemAudioCaptureUnavailable };
 	} catch (error) {
 		recordNativeCaptureDiagnostics({
 			backend: "windows-wgc",

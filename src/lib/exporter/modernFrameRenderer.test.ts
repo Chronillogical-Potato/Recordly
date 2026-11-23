@@ -5,6 +5,7 @@ const {
 	destroyForwardFrameSourceMock,
 	getForwardFrameAtTimeMock,
 	initializeForwardFrameSourceMock,
+	isWebGLSupportedMock,
 	pixiApplicationInstancesMock,
 	pixiInitializationErrorsMock,
 	resolveMediaElementSourceMock,
@@ -13,6 +14,7 @@ const {
 	destroyForwardFrameSourceMock: vi.fn(async () => undefined),
 	getForwardFrameAtTimeMock: vi.fn(async () => null),
 	initializeForwardFrameSourceMock: vi.fn(async () => undefined),
+	isWebGLSupportedMock: vi.fn(() => true),
 	pixiApplicationInstancesMock: [] as Array<{
 		destroy: ReturnType<typeof vi.fn>;
 		init: ReturnType<typeof vi.fn>;
@@ -27,6 +29,24 @@ const {
 }));
 
 vi.mock("pixi.js", () => ({
+	Filter: class {
+		resources: Record<string, { uniforms: Record<string, unknown> }> = {};
+		padding = 0;
+		constructor(
+			options: { resources?: Record<string, Record<string, { value: unknown }>> } = {},
+		) {
+			for (const [name, group] of Object.entries(options.resources ?? {})) {
+				const uniforms: Record<string, unknown> = {};
+				for (const [key, uniform] of Object.entries(group)) {
+					uniforms[key] = (uniform as { value: unknown }).value;
+				}
+				this.resources[name] = { uniforms };
+			}
+		}
+	},
+	GpuProgram: { from: vi.fn(() => ({})) },
+	GlProgram: { from: vi.fn(() => ({})) },
+	isWebGLSupported: isWebGLSupportedMock,
 	RendererType: { WEBGL: 1, WEBGPU: 2 },
 	Application: class {
 		destroy = vi.fn(() => {
@@ -68,10 +88,6 @@ vi.mock("pixi.js", () => ({
 	Texture: {
 		from: vi.fn(() => ({ source: { update: vi.fn() }, destroy: vi.fn() })),
 	},
-}));
-
-vi.mock("pixi-filters/motion-blur", () => ({
-	MotionBlurFilter: class {},
 }));
 
 vi.mock("@/lib/assetPath", () => ({
@@ -132,6 +148,25 @@ vi.mock("./annotationRenderer", () => ({
 }));
 
 import { createMockCanvas, createRenderer } from "./modernFrameRenderer.testSupport";
+
+it("sizes export annotations against the padded recording rather than the full canvas", () => {
+	const renderer = createRenderer();
+	renderer.geometry.layoutCache = {
+		stageSize: { width: 1920, height: 1080 },
+		videoSize: { width: 1920, height: 1080 },
+		baseScale: 0.5,
+		baseOffset: { x: 480, y: 270 },
+		maskRect: {
+			x: 480,
+			y: 270,
+			width: 960,
+			height: 540,
+			sourceCrop: { x: 0, y: 0, width: 1, height: 1 },
+		},
+	};
+
+	expect(renderer.annotations.calculateAnnotationScaleFactor()).toBe(0.5);
+});
 
 it("bypasses blur annotation compositing during gaps and clears stale composite frames", async () => {
 	const renderer = createRenderer();
@@ -201,6 +236,44 @@ describe("ModernFrameRenderer Pixi lifecycle", () => {
 			Object.assign(pixiApplicationInstancesMock[0].renderer, { type: 1 });
 			await expect(pending).resolves.toMatchObject({ backend: "webgl" });
 		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
+
+	it("stops a WebGL-only retry when WebGL initialization fails", async () => {
+		pixiApplicationInstancesMock.length = 0;
+		pixiInitializationErrorsMock.length = 0;
+		pixiInitializationErrorsMock.push(new Error("WebGL initialization failed"), undefined);
+		vi.stubGlobal("navigator", { gpu: {} });
+
+		try {
+			const renderer = createRenderer();
+			Object.assign(renderer.config, { preferredRenderBackend: "webgl", forceWebgl: true });
+			await expect(
+				renderer.scene.createPixiApplication({} as HTMLCanvasElement),
+			).rejects.toThrow("WebGL initialization failed");
+			expect(pixiApplicationInstancesMock).toHaveLength(1);
+		} finally {
+			pixiInitializationErrorsMock.length = 0;
+			vi.unstubAllGlobals();
+		}
+	});
+
+	it("does not ask Pixi to auto-detect WebGPU when WebGL is unavailable on retry", async () => {
+		pixiApplicationInstancesMock.length = 0;
+		isWebGLSupportedMock.mockReturnValueOnce(false);
+		vi.stubGlobal("navigator", { gpu: {} });
+
+		try {
+			const renderer = createRenderer();
+			Object.assign(renderer.config, { preferredRenderBackend: "webgl", forceWebgl: true });
+			await expect(
+				renderer.scene.createPixiApplication({} as HTMLCanvasElement),
+			).rejects.toThrow("WebGL runtime is unavailable");
+			expect(pixiApplicationInstancesMock).toHaveLength(0);
+		} finally {
+			isWebGLSupportedMock.mockReset();
+			isWebGLSupportedMock.mockReturnValue(true);
 			vi.unstubAllGlobals();
 		}
 	});

@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { flushSync } from "react-dom";
 import { type ZoomFocus } from "../types";
-import { computeCameraTransform } from "./cameraTransform";
+import { computeCameraTransform, resolveCameraTargetFocus } from "./cameraTransform";
 import { type CursorFollowCameraState, createCursorFollowCameraState } from "./cursorFollowCamera";
 import { getFrameMotionSample } from "./frameMotionSample";
 import type { PlaybackProps } from "./playbackProps";
@@ -45,6 +45,7 @@ export type usePlaybackTickerInput = Pick<
 	| "lastRenderedContentTimeRef"
 	| "isSeekingRef"
 	| "shouldSnapPausedFrameRef"
+	| "shouldRegenerateFrameRef"
 	| "zoomClassicModeRef"
 	| "videoRef"
 	| "cursorFollowCameraNeedsResetRef"
@@ -95,6 +96,7 @@ export function usePlaybackTicker(input: usePlaybackTickerInput) {
 		lastRenderedContentTimeRef,
 		isSeekingRef,
 		shouldSnapPausedFrameRef,
+		shouldRegenerateFrameRef,
 		zoomClassicModeRef,
 		videoRef,
 		cursorFollowCameraNeedsResetRef,
@@ -170,6 +172,15 @@ export function usePlaybackTicker(input: usePlaybackTickerInput) {
 			state.appliedScale = appliedTransform.scale;
 		};
 
+		const recordComposedFrame = () => {
+			composedFrameRef.current = {
+				revision: (composedFrameRef.current?.revision ?? 0) + 1,
+				width: stageSizeRef.current.width,
+				height: stageSizeRef.current.height,
+				source: videoRef.current?.currentSrc ?? "",
+			};
+		};
+
 		const ticker = () => {
 			if (suspendRenderingRef.current) {
 				return;
@@ -203,15 +214,23 @@ export function usePlaybackTicker(input: usePlaybackTickerInput) {
 					connectedZoomGapMs: connectedZoomGapMsRef.current,
 					connectedZoomDurationMs: connectedZoomDurationMsRef.current,
 				}).strength === 0;
+			const video = videoRef.current;
+			const isSeeking = isSeekingRef.current || Boolean(video?.seeking);
 			if (
 				!shouldComposePreviewFrame({
 					motionMode,
-					isSeeking: isSeekingRef.current || Boolean(videoRef.current?.seeking),
+					isSeeking,
 					contentTimeChanged,
 					shouldSnapPausedFrame: shouldSnapPausedFrameRef.current,
 					hasPendingNeutralFrame,
 				})
 			) {
+				// Replace the paused frame's pixels without sampling a new camera or cursor pose.
+				if (shouldRegenerateFrameRef.current && !isSeeking) {
+					updatePreviewTextureRef.current?.();
+					if (!shouldRegenerateFrameRef.current && videoSprite.visible)
+						recordComposedFrame();
+				}
 				return;
 			}
 			lastRenderedContentTimeRef.current = contentTimeMs;
@@ -263,16 +282,23 @@ export function usePlaybackTicker(input: usePlaybackTickerInput) {
 						createCursorFollowCameraState(),
 					)
 				: null;
+			const previousFocus = previousTarget
+				? resolveCameraTargetFocus(
+						previousTarget,
+						stageSizeRef.current,
+						baseMaskRef.current,
+					)
+				: null;
 			const motionSample = sampleFrozenFrame
-				? frameSample && previousTarget
+				? frameSample && previousTarget && previousFocus
 					? {
 							previousTransform: computeZoomTransform({
 								stageSize: stageSizeRef.current,
 								baseMask: baseMaskRef.current,
 								zoomScale: previousTarget.scale,
 								zoomProgress: previousTarget.progress,
-								focusX: previousTarget.focus.cx,
-								focusY: previousTarget.focus.cy,
+								focusX: previousFocus.cx,
+								focusY: previousFocus.cy,
 							}),
 							deltaMs: frameSample.deltaMs,
 						}
@@ -339,12 +365,7 @@ export function usePlaybackTicker(input: usePlaybackTickerInput) {
 				annotationFrameStore.publish(frame);
 			}
 			// A render/resize alone is not a new composition of the video and overlays.
-			composedFrameRef.current = {
-				revision: (composedFrameRef.current?.revision ?? 0) + 1,
-				width: stageSizeRef.current.width,
-				height: stageSizeRef.current.height,
-				source: videoRef.current?.currentSrc ?? "",
-			};
+			recordComposedFrame();
 		};
 
 		const loop = createPreviewRenderLoop({
@@ -388,6 +409,7 @@ export function usePlaybackTicker(input: usePlaybackTickerInput) {
 		lastRenderedContentTimeRef,
 		isSeekingRef,
 		shouldSnapPausedFrameRef,
+		shouldRegenerateFrameRef,
 		zoomClassicModeRef,
 		videoRef,
 		cursorFollowCameraNeedsResetRef,

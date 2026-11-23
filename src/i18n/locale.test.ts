@@ -27,12 +27,15 @@ describe("locale negotiation", () => {
 		["zh-cn", "zh-CN"],
 		["zh_Hant_HK", "zh-TW"],
 		["pt-PT", "pt-BR"],
+		["vi-VN", "vi"],
+		["vi_VN", "vi"],
 		["es-MX", "es"],
 		["ko-KR", "ko"],
 		["ja-JP", "ja"],
 		["ja_JP", "ja"],
 		["en-AU", "en"],
 		["de-DE-u-co-phonebk", "de"],
+		["tr-TR", "tr"],
 	])("maps %s to %s", (input, expected) => expect(normalizeLocale(input)).toBe(expected));
 	it("rejects malformed and unsupported tags", () => {
 		for (const input of ["!invalid", "ru", "", null, undefined])

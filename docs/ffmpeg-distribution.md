@@ -53,7 +53,8 @@ test as proof that the source artifact was published.
 
 Run `npm run build:ffmpeg-source` after installing Node dependencies and before
 packaging on the target operating system. This builds FFmpeg and FFprobe from
-the same FFmpeg 8.1.2, x264 and libvpx sources used for the macOS build.
+the same FFmpeg 8.1.2, x264 and libvpx sources used for the macOS build, plus
+pinned zlib for the PNG encoder and decoder used by GIF palette optimization.
 Assembly support is required. On Linux, install Bash, GCC and G++ (provided by
 `build-essential` on Ubuntu), make, binutils, NASM, diffutils, Perl and pkg-config.
 Windows requires MSYS2 with UCRT64 GCC, NASM, pkgconf and MSYS make, diffutils
@@ -65,9 +66,20 @@ The Windows build enables Media Foundation and Windows video acceleration APIs.
 Standalone FFmpeg builds no longer auto-detect additional codec libraries.
 Recordly's independent native capture and GPU export helpers are built separately.
 
+On Linux, Recordly prefers a system FFmpeg with the H.264 software encoder, AAC,
+image encoders, and GIF filters needed by the app. This makes hardware encoders
+from distro builds available while preserving the software export fallback.
+Recordly uses the bundled FFmpeg when those capabilities are missing. On Windows
+and macOS the bundled binary remains the first automatic choice.
+
+Set `RECORDLY_FFMPEG_PATH` before launching Recordly to choose a specific FFmpeg
+executable. If the path cannot be run, Recordly logs a warning and uses its normal
+selection order. FFprobe is resolved separately.
+
 The installer and packaged smoke check both require the pinned archive hashes,
 build recipe, configuration, licenses and one build record matching both
-executables. The evidence is included in the package and the release workflow
+executables. The smoke check also runs the GIF optimizer with the packaged
+binary. The evidence is included in the package and the release workflow
 uploads it separately as a source ZIP. Developer downloads remain available for
 routine development and are rejected by packaging. Linux ARM64 packaging
 remains disabled until there is a validated source build for that target.

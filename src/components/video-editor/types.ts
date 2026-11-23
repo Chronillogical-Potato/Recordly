@@ -1,3 +1,5 @@
+import type { CursorVisualType } from "@/shared/cursorVisualTypes";
+
 export type ZoomDepth = 1 | 2 | 3 | 4 | 5 | 6;
 
 export interface ZoomFocus {
@@ -32,16 +34,7 @@ export interface CursorTelemetryPoint {
 		| "mouseup";
 	/** Button whose down/up transition this sample records. */
 	mouseButton?: 1 | 2 | 3;
-	cursorType?:
-		| "arrow"
-		| "text"
-		| "pointer"
-		| "crosshair"
-		| "open-hand"
-		| "closed-hand"
-		| "resize-ew"
-		| "resize-ns"
-		| "not-allowed";
+	cursorType?: CursorVisualType;
 }
 
 export interface CursorVisualSettings {
@@ -575,6 +568,21 @@ export const DEFAULT_PADDING: Padding = {
 	right: 0,
 	linked: true,
 };
+
+/** Window captures look best framed on the wallpaper; screen captures fill the canvas. */
+export const DEFAULT_WINDOW_PADDING: Padding = {
+	top: 25,
+	bottom: 25,
+	left: 25,
+	right: 25,
+	linked: true,
+};
+
+export type CaptureSourceKind = "screen" | "window";
+
+export function getDefaultPaddingForCaptureSource(kind: CaptureSourceKind | null): Padding {
+	return kind === "window" ? DEFAULT_WINDOW_PADDING : DEFAULT_PADDING;
+}
 export type {
 	SourceAudioTrackSetting,
 	SourceAudioTrackSettings,
@@ -626,6 +634,7 @@ export interface AutoCaptionSettings {
 	fontFamily: string;
 	fontSize: number;
 	bottomOffset: number;
+	horizontalPosition: number;
 	maxWidth: number;
 	maxRows: number;
 	animationStyle: AutoCaptionAnimation;
@@ -643,6 +652,7 @@ export const DEFAULT_AUTO_CAPTION_SETTINGS: AutoCaptionSettings = {
 	fontFamily: getDefaultCaptionFontFamily(),
 	fontSize: 30,
 	bottomOffset: 3,
+	horizontalPosition: 50,
 	maxWidth: 62,
 	maxRows: 1,
 	animationStyle: "none",

@@ -16,6 +16,7 @@ export function useRecorderCaptureSetup(
 		| "storeMicrophoneSidecar"
 		| "finalizeRecordingSession"
 		| "hideEditorOverlayCursorByDefault"
+		| "captureSourceKind"
 		| "preparePermissions"
 		| "recordingSessionTimestamp"
 		| "resetRecordingClock"
@@ -37,6 +38,7 @@ export function useRecorderCaptureSetup(
 		storeMicrophoneSidecar,
 		finalizeRecordingSession,
 		hideEditorOverlayCursorByDefault,
+		captureSourceKind,
 		preparePermissions,
 		recordingSessionTimestamp,
 		resetRecordingClock,
@@ -149,6 +151,10 @@ export function useRecorderCaptureSetup(
 			alert(translate("notifications.selectSource", "Please select a source to record"));
 			return null;
 		}
+		captureSourceKind.current =
+			selectedSource.sourceType === "window" || selectedSource.id?.startsWith("window:")
+				? "window"
+				: "screen";
 
 		const permissionsReady = await preparePermissions();
 		if (!permissionsReady) {
@@ -209,7 +215,26 @@ export function useRecorderCaptureSetup(
 				);
 				micLabel = mic?.label || undefined;
 			} catch {
-				// Fall through - native process will use the default mic.
+				// Native capture handles unavailable devices.
+			}
+			if (useNativeWindowsCapture && microphoneDeviceId && !micLabel) {
+				let stream: MediaStream | undefined;
+				try {
+					stream = await navigator.mediaDevices.getUserMedia({
+						audio: { deviceId: { exact: microphoneDeviceId } },
+					});
+					const devices = await navigator.mediaDevices.enumerateDevices();
+					micLabel =
+						devices.find(
+							(device) =>
+								device.kind === "audioinput" &&
+								device.deviceId === microphoneDeviceId,
+						)?.label || undefined;
+				} catch {
+					// Keep the device ID so the native and browser fallback paths can resolve it.
+				} finally {
+					stream?.getTracks().forEach((track) => track.stop());
+				}
 			}
 		}
 
@@ -229,6 +254,7 @@ export function useRecorderCaptureSetup(
 		pendingNativeCleanupPath,
 		resetRecordingClock,
 		hideEditorOverlayCursorByDefault,
+		captureSourceKind,
 		recordingSessionTimestamp,
 		hasShownNativeWindowsFallbackToast,
 	]);

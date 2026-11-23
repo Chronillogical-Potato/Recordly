@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type { CaptionModelDownloadProgress, CaptionModelId } from "../src/shared/captionModels";
 import type { CloudBillingInput } from "../src/types/cloudBilling";
+import type { HudOverlayRegion } from "./hudOverlayBounds";
 import type { RecordingSessionData } from "./ipc/types";
 
 type NativeVideoExportWriteResult = { success: boolean; error?: string };
@@ -72,6 +73,7 @@ type NativeStaticLayoutMetrics = NativeVideoAudioMuxMetrics & {
 type NativeStaticLayoutProgress = {
 	sessionId?: string;
 	backend?: NativeStaticLayoutChunkMetric["backend"];
+	nvidiaCudaFailed?: boolean;
 	stage?: "preparing" | "finalizing";
 	elapsedMs?: number;
 	averageFps?: number;
@@ -203,6 +205,9 @@ contextBridge.exposeInMainWorld("electronAPI", {
 	hudOverlaySetIgnoreMouse: (ignore: boolean) => {
 		ipcRenderer.send("hud-overlay-set-ignore-mouse", ignore);
 	},
+	hudOverlaySetPopoverOpen: (open: boolean) => {
+		ipcRenderer.send("hud-overlay-set-popover-open", open);
+	},
 	hudOverlaySetSourceSelectionActive: (active: boolean) => {
 		ipcRenderer.send("hud-overlay-set-source-selection-active", active);
 	},
@@ -241,8 +246,9 @@ contextBridge.exposeInMainWorld("electronAPI", {
 			bottom: number;
 			shape?: "ellipse";
 		}> | null,
+		recordingShape?: HudOverlayRegion[],
 	) => {
-		ipcRenderer.send("hud-overlay-set-interactive-bounds", bounds);
+		ipcRenderer.send("hud-overlay-set-interactive-bounds", bounds, recordingShape);
 	},
 	getHudOverlayCaptureProtection: () => {
 		return ipcRenderer.invoke("get-hud-overlay-capture-protection");
@@ -554,11 +560,6 @@ contextBridge.exposeInMainWorld("electronAPI", {
 		return await ipcRenderer.invoke("get-sources", opts);
 	},
 	showRecordingPermissions: () => ipcRenderer.invoke("show-recording-permissions"),
-	onRecordingPermissionsRequested: (callback: () => void) => {
-		const listener = () => callback();
-		ipcRenderer.on("recording-permissions-requested", listener);
-		return () => ipcRenderer.removeListener("recording-permissions-requested", listener);
-	},
 	showRecordingHud: () => ipcRenderer.invoke("show-recording-hud"),
 	showOnboardingWindow: (options?: { preview?: boolean }) =>
 		ipcRenderer.invoke("show-onboarding-window", options),
@@ -575,6 +576,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
 		ipcRenderer.on("onboarding-intro-shown", listener);
 		return () => ipcRenderer.removeListener("onboarding-intro-shown", listener);
 	},
+	waitForOnboardingBanner: () => ipcRenderer.invoke("wait-for-onboarding-banner"),
 	onOnboardingSoundtrackStart: (callback: () => void) => {
 		const listener = () => callback();
 		ipcRenderer.on("onboarding-soundtrack-start", listener);
@@ -601,6 +603,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
 	openSourceSelector: () => {
 		return ipcRenderer.invoke("open-source-selector");
 	},
+	isWaylandScreenCastMissing: () => ipcRenderer.invoke("is-wayland-screencast-missing"),
 	selectSource: (source: ProcessedDesktopSource) => {
 		return ipcRenderer.invoke("select-source", source);
 	},
@@ -724,8 +727,10 @@ contextBridge.exposeInMainWorld("electronAPI", {
 	getRecordedVideoPath: () => {
 		return ipcRenderer.invoke("get-recorded-video-path");
 	},
-	setRecordingState: (recording: boolean) => {
-		return ipcRenderer.invoke("set-recording-state", recording);
+	beginWindowsRecordingCursorCapture: () =>
+		ipcRenderer.invoke("begin-windows-recording-cursor-capture"),
+	setRecordingState: (recording: boolean, startedAtMs?: number) => {
+		return ipcRenderer.invoke("set-recording-state", recording, startedAtMs);
 	},
 	setCursorScale: (scale: number) => {
 		return ipcRenderer.invoke("set-cursor-scale", scale);
@@ -777,9 +782,6 @@ contextBridge.exposeInMainWorld("electronAPI", {
 	},
 	getAccessibilityPermissionStatus: () => {
 		return ipcRenderer.invoke("get-accessibility-permission-status");
-	},
-	requestAccessibilityPermission: () => {
-		return ipcRenderer.invoke("request-accessibility-permission");
 	},
 	getScreenRecordingPermissionStatus: () => {
 		return ipcRenderer.invoke("get-screen-recording-permission-status");
@@ -838,7 +840,10 @@ contextBridge.exposeInMainWorld("electronAPI", {
 	importWallpaperVideo: (file: File) => {
 		return ipcRenderer.invoke("import-wallpaper-video", webUtils.getPathForFile(file));
 	},
-	openVideoFilePicker: (options?: { includeProjects?: boolean }) => {
+	openVideoFilePicker: (options?: {
+		includeProjects?: boolean;
+		preserveProjectPath?: boolean;
+	}) => {
 		return ipcRenderer.invoke("open-video-file-picker", options);
 	},
 	openAudioFilePicker: () => {
@@ -939,6 +944,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
 		options?: {
 			preserveProjectPath?: boolean;
 			hideOverlayCursorByDefault?: boolean;
+			captureSourceKind?: "screen" | "window";
 		},
 	) => {
 		return ipcRenderer.invoke("set-current-video-path", path, options);
@@ -949,6 +955,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
 			webcamPath?: string | null;
 			timeOffsetMs?: number;
 			hideOverlayCursorByDefault?: boolean;
+			captureSourceKind?: "screen" | "window";
 		},
 		options?: { preserveProjectPath?: boolean },
 	) => {
@@ -1333,6 +1340,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
 		systemAudioEnabled?: boolean;
 		webcamEnabled?: boolean;
 		webcamDeviceId?: string;
+		floatingWebcamPreviewVisible?: boolean;
 	}) => ipcRenderer.invoke("set-recording-preferences", prefs),
 	getCountdownDelay: () => ipcRenderer.invoke("get-countdown-delay"),
 	setCountdownDelay: (delay: number) => ipcRenderer.invoke("set-countdown-delay", delay),

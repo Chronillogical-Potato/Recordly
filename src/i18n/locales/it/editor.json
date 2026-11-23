@@ -84,6 +84,8 @@
 		"videos": "Video"
 	},
 	"playback": {
+		"resolution": "Risoluzione di riproduzione",
+		"fullResolution": "Intera",
 		"play": "Riproduci",
 		"pause": "Pausa",
 		"skipBack": "Indietro",
@@ -243,6 +245,7 @@
 		"savingGif": "Salvataggio GIF…",
 		"encodingGif": "Completamento GIF…",
 		"errorCopied": "Errore copiato",
+		"nvidiaCudaFallback": "L'esportazione con NVIDIA CUDA non è riuscita. Recordly sta provando un altro metodo di esportazione.",
 		"errorCopyFailed": "Impossibile copiare. Seleziona il testo dell’errore e copialo manualmente.",
 		"copyError": "Copia errore"
 	},
@@ -251,7 +254,9 @@
 	},
 	"toolbar": {
 		"addLayer": "Aggiungi livello",
-		"splitClip": "Dividi clip (C)"
+		"splitClip": "Dividi clip (C)",
+		"trimStart": "Taglia l'inizio fino alla testina ({{shortcut}})",
+		"trimEnd": "Taglia la fine dalla testina ({{shortcut}})"
 	},
 	"timeline": {
 		"expand": "Espandi timeline",

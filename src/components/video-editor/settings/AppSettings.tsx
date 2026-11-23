@@ -30,8 +30,10 @@ const APP_LANGUAGE_LABELS: Record<AppLocale, string> = {
 	ko: "한국어",
 	ja: "日本語",
 	"pt-BR": "Português (Brasil)",
+	vi: "Tiếng Việt",
 	"zh-CN": "简体中文",
 	"zh-TW": "繁體中文",
+	tr: "Türkçe",
 };
 
 export const appSettingsKeys = [

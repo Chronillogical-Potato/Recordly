@@ -84,6 +84,8 @@
 		"videos": "동영상"
 	},
 	"playback": {
+		"resolution": "재생 해상도",
+		"fullResolution": "전체",
 		"play": "재생",
 		"pause": "일시 정지",
 		"skipBack": "뒤로 건너뛰기",
@@ -243,6 +245,7 @@
 		"savingGif": "GIF 저장 중…",
 		"encodingGif": "GIF 마무리 중…",
 		"errorCopied": "오류를 복사했습니다",
+		"nvidiaCudaFallback": "NVIDIA CUDA 내보내기에 실패했습니다. Recordly가 다른 내보내기 방식을 시도하고 있습니다.",
 		"errorCopyFailed": "복사하지 못했습니다. 오류 텍스트를 선택하여 직접 복사하세요.",
 		"copyError": "오류 복사"
 	},
@@ -251,7 +254,9 @@
 	},
 	"toolbar": {
 		"addLayer": "레이어 추가",
-		"splitClip": "클립 분할 (C)"
+		"splitClip": "클립 분할 (C)",
+		"trimStart": "재생 헤드까지 시작 부분 자르기 ({{shortcut}})",
+		"trimEnd": "재생 헤드부터 끝 부분 자르기 ({{shortcut}})"
 	},
 	"timeline": {
 		"expand": "타임라인 펼치기",

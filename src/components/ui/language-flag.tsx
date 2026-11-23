@@ -10,8 +10,10 @@ const countries: Record<AppLocale, string> = {
 	ko: "KR",
 	ja: "JP",
 	"pt-BR": "BR",
+	vi: "VN",
 	"zh-CN": "CN",
 	"zh-TW": "TW",
+	tr: "TR",
 };
 
 function star(cx: number, cy: number, radius: number, rotation = -90) {
@@ -103,6 +105,12 @@ export function LanguageFlag({ locale }: { locale: AppLocale }) {
 					</g>
 				</>
 			)}
+			{locale === "vi" && (
+				<>
+					<path fill="#da251d" d="M0 0h24v16H0z" />
+					<polygon fill="#ffff00" points={star(12, 8, 4.8)} />
+				</>
+			)}
 			{locale === "zh-CN" && (
 				<>
 					<path fill="#de2910" d="M0 0h24v16H0z" />
@@ -136,6 +144,14 @@ export function LanguageFlag({ locale }: { locale: AppLocale }) {
 						))}
 						<circle cx="6" cy="4" r="1.4" stroke="#000095" strokeWidth=".3" />
 					</g>
+				</>
+			)}
+			{locale === "tr" && (
+				<>
+					<path fill="#e30a17" d="M0 0h24v16H0z" />
+					<circle cx="9" cy="8" r="4.2" fill="white" />
+					<circle cx="10.2" cy="8" r="3.36" fill="#e30a17" />
+					<polygon points={star(13.6, 8, 1.4, 180)} fill="white" />
 				</>
 			)}
 		</svg>

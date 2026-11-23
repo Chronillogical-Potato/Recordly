@@ -2,7 +2,7 @@ import { Card } from "@heroui/react";
 import { AnimatePresence, motion } from "motion/react";
 import { useLayoutEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
-import { Trash as Trash2 } from "@/components/ui/icons";
+import { Copy, Trash as Trash2 } from "@/components/ui/icons";
 import type { EditorEffectSection } from "@/components/video-editor/types";
 import { cn } from "@/lib/utils";
 
@@ -14,8 +14,10 @@ export const settingsPanelShellKeys = [
 	"webcam",
 	"onClearWebcam",
 	"activeEffectSection",
+	"onDuplicateSelectedRegion",
 	"selectedZoomId",
 	"onZoomDelete",
+	"onClearZooms",
 	"selectedClipId",
 	"onClipDelete",
 	"selectedAudioId",
@@ -32,8 +34,10 @@ export function SettingsPanelShell(props: Props) {
 		webcam,
 		onClearWebcam,
 		activeEffectSection,
+		onDuplicateSelectedRegion,
 		selectedZoomId,
 		onZoomDelete,
+		onClearZooms,
 		selectedClipId,
 		onClipDelete,
 		selectedAudioId,
@@ -41,8 +45,12 @@ export function SettingsPanelShell(props: Props) {
 		selectedAnnotationId,
 		onAnnotationDelete,
 	} = props;
-	const { tSettings } = useSettingsTranslations();
+	const { t, tSettings } = useSettingsTranslations();
 	const { children } = props;
+	const hasDuplicableSelection =
+		selectedAnnotationId ||
+		(activeEffectSection === "zoom" && selectedZoomId) ||
+		(activeEffectSection === "audio" && selectedAudioId);
 	const scrollRef = useRef<HTMLDivElement>(null);
 	const scrollFade = useScrollFade(scrollRef, activeEffectSection);
 	useLayoutEffect(() => {
@@ -85,6 +93,18 @@ export function SettingsPanelShell(props: Props) {
 					})() && "hidden",
 				)}
 			>
+				{hasDuplicableSelection && onDuplicateSelectedRegion && (
+					<Button
+						type="button"
+						onClick={onDuplicateSelectedRegion}
+						variant="outline"
+						size="sm"
+						className="mb-2 h-9 w-full gap-2 text-xs"
+					>
+						<Copy className="size-3.5" aria-hidden="true" />
+						{t("shortcuts.actions.duplicateSelected", "Duplicate Selected")}
+					</Button>
+				)}
 				{activeEffectSection === "webcam" && webcam?.sourcePath && (
 					<div className="flex gap-2">
 						<Button
@@ -114,17 +134,28 @@ export function SettingsPanelShell(props: Props) {
 					</Button>
 				)}
 				{activeEffectSection === "zoom" && selectedZoomId && (
-					<Button
-						onClick={() => {
-							if (selectedZoomId && onZoomDelete) onZoomDelete(selectedZoomId);
-						}}
-						variant="destructive-soft"
-						size="sm"
-						className="h-9 w-full gap-2 text-xs"
-					>
-						<Trash2 className="h-3 w-3" />
-						{tSettings("zoom.deleteZoom", "Delete Zoom")}
-					</Button>
+					<div className="flex flex-col gap-2">
+						<Button
+							onClick={() => onZoomDelete?.(selectedZoomId)}
+							variant="destructive-soft"
+							size="sm"
+							className="h-9 w-full gap-2 text-xs"
+						>
+							<Trash2 className="h-3 w-3" />
+							{tSettings("zoom.deleteZoom", "Delete Zoom")}
+						</Button>
+						{onClearZooms && (
+							<Button
+								onClick={onClearZooms}
+								variant="destructive-soft"
+								size="sm"
+								className="h-9 w-full gap-2 text-xs"
+							>
+								<Trash2 className="h-3 w-3" aria-hidden="true" />
+								{tSettings("zoom.clearAllZooms")}
+							</Button>
+						)}
+					</div>
 				)}
 				{activeEffectSection === "audio" && selectedAudioId && (
 					<Button

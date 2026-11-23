@@ -7,6 +7,7 @@ import {
 	saveEditorPreferences,
 } from "../editorPreferences";
 import type { useAppearanceState } from "../state/useAppearanceState";
+import type { CaptureSourceKind } from "../types";
 
 type Input = {
 	enabled: boolean;
@@ -15,6 +16,8 @@ type Input = {
 	aspectRatio: AspectRatio;
 	whisperExecutablePath: string | null;
 	whisperModelPath: string | null;
+	/** Which per-kind padding preference padding edits update; null leaves both unchanged. */
+	captureSourceKind: CaptureSourceKind | null;
 };
 
 export function useEditorPreferencesPersistence({
@@ -24,8 +27,11 @@ export function useEditorPreferencesPersistence({
 	aspectRatio,
 	whisperExecutablePath,
 	whisperModelPath,
+	captureSourceKind,
 }: Input) {
-	const previousRef = useRef<Partial<EditorPreferences> | null>(null);
+	const previousRef = useRef<
+		(Partial<EditorPreferences> & { padding?: EditorPreferences["screenPadding"] }) | null
+	>(null);
 	useEffect(() => {
 		const current = {
 			autoApplyFreshRecordingAutoZooms: appearance.autoApplyFreshRecordingAutoZooms,
@@ -45,6 +51,7 @@ export function useEditorPreferencesPersistence({
 			connectedZoomEasing: appearance.connectedZoomEasing,
 			showCursor: appearance.showCursor,
 			loopCursor: appearance.loopCursor,
+			alwaysUsePointerCursor: appearance.alwaysUsePointerCursor,
 			cursorStyle: appearance.cursorStyle,
 			cursorSize: appearance.cursorSize,
 			cursorSmoothing: appearance.cursorSmoothing,
@@ -92,6 +99,14 @@ export function useEditorPreferencesPersistence({
 					),
 				);
 				if (Object.keys(webcam).length) changes.webcam = webcam;
+			} else if (key === "padding") {
+				if (
+					captureSourceKind &&
+					JSON.stringify(current.padding) !== JSON.stringify(previous.padding)
+				) {
+					changes[captureSourceKind === "window" ? "windowPadding" : "screenPadding"] =
+						current.padding;
+				}
 			} else if (JSON.stringify(current[key]) !== JSON.stringify(previous[key])) {
 				Object.assign(changes, { [key]: current[key] });
 			}
@@ -117,6 +132,7 @@ export function useEditorPreferencesPersistence({
 		appearance.connectedZoomEasing,
 		appearance.showCursor,
 		appearance.loopCursor,
+		appearance.alwaysUsePointerCursor,
 		appearance.cursorStyle,
 		appearance.cursorSize,
 		appearance.cursorSmoothing,
@@ -142,5 +158,6 @@ export function useEditorPreferencesPersistence({
 		aspectRatio,
 		whisperExecutablePath,
 		whisperModelPath,
+		captureSourceKind,
 	]);
 }

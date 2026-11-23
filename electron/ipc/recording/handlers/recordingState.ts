@@ -5,6 +5,7 @@ import { startWindowBoundsCapture, stopWindowBoundsCapture } from "../../cursor/
 import { startInteractionCapture, stopInteractionCapture } from "../../cursor/interaction";
 import { startNativeCursorMonitor, stopNativeCursorMonitor } from "../../cursor/monitor";
 import {
+	clearActiveCursorTelemetry,
 	resetCursorCaptureClock,
 	sampleCursorPoint,
 	snapshotCursorTelemetryForPersistence,
@@ -13,23 +14,55 @@ import {
 } from "../../cursor/telemetry";
 import { getSourceArea } from "../../sourceArea";
 import {
+	isCursorCaptureActive,
 	selectedSource,
-	setActiveCursorSamples,
 	setCursorCaptureStartTimeMs,
 	setIsCursorCaptureActive,
 	setLastLeftClick,
 	setLinuxCursorScreenPoint,
 	setPendingCursorSamples,
+	windowsNativeCaptureActive,
 } from "../../state";
 import { recordingFocus } from "../focus";
+import { setRecordingZoomShortcutActive } from "../zoomShortcut";
 
 import type { RecordingHandlerContext } from "./handlerContext";
+
+function startRecordingCursorCapture(recordingStartedAtMs?: number) {
+	const now = Date.now();
+	const startedAtMs =
+		recordingStartedAtMs !== undefined &&
+		Number.isSafeInteger(recordingStartedAtMs) &&
+		recordingStartedAtMs > 0 &&
+		recordingStartedAtMs <= now
+			? recordingStartedAtMs
+			: now;
+	stopCursorCapture();
+	stopInteractionCapture();
+	startWindowBoundsCapture();
+	void startNativeCursorMonitor();
+	setIsCursorCaptureActive(true);
+	clearActiveCursorTelemetry();
+	setPendingCursorSamples([]);
+	setCursorCaptureStartTimeMs(startedAtMs);
+	resetCursorCaptureClock();
+	setLinuxCursorScreenPoint(null);
+	setLastLeftClick(null);
+	sampleCursorPoint();
+	startCursorSampling();
+	void startInteractionCapture();
+}
+
+export function beginWindowsRecordingCursorCapture() {
+	if (windowsNativeCaptureActive && !isCursorCaptureActive) startRecordingCursorCapture();
+}
 
 export function applyRecordingState(
 	context: Pick<RecordingHandlerContext, "sessionLock" | "ownerRecovery">,
 	recording: boolean,
 	ownerId?: number,
 	onRecordingStateChange?: (recording: boolean, sourceName: string) => void,
+	recordingStartedAtMs?: number,
 ) {
 	const { sessionLock, ownerRecovery } = context;
 
@@ -37,20 +70,8 @@ export function applyRecordingState(
 	ownerRecovery.setUserRecording(recording, ownerId);
 	if (recording) {
 		void recordingFocus.start(selectedSource);
-		stopCursorCapture();
-		stopInteractionCapture();
-		startWindowBoundsCapture();
-		void startNativeCursorMonitor();
-		setIsCursorCaptureActive(true);
-		setActiveCursorSamples([]);
-		setPendingCursorSamples([]);
-		setCursorCaptureStartTimeMs(Date.now());
-		resetCursorCaptureClock();
-		setLinuxCursorScreenPoint(null);
-		setLastLeftClick(null);
-		sampleCursorPoint();
-		startCursorSampling();
-		void startInteractionCapture();
+		if (!windowsNativeCaptureActive || !isCursorCaptureActive)
+			startRecordingCursorCapture(recordingStartedAtMs);
 	} else {
 		setIsCursorCaptureActive(false);
 		stopCursorCapture();
@@ -61,9 +82,10 @@ export function applyRecordingState(
 		setLinuxCursorScreenPoint(null);
 		resetCursorCaptureClock();
 		snapshotCursorTelemetryForPersistence();
-		setActiveCursorSamples([]);
+		clearActiveCursorTelemetry();
 	}
 
+	setRecordingZoomShortcutActive(recording);
 	if (!recording) recordingFocus.stop();
 	const source = selectedSource || { name: "Screen" };
 	const recordingArea = recording ? getSourceArea(selectedSource) : null;

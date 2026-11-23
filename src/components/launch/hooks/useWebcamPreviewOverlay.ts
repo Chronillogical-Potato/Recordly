@@ -1,4 +1,13 @@
-import { type RefObject, useCallback, useEffect, useRef, useState } from "react";
+import {
+	type RefObject,
+	type SetStateAction,
+	useCallback,
+	useEffect,
+	useRef,
+	useState,
+} from "react";
+import { getErrorMessage } from "@/hooks/recordingError";
+import { acquireWebcamCapture, type WebcamCapture } from "../../../hooks/webcamCapture";
 import { loadEditorPreferences } from "../../video-editor/editorPreferences";
 import { canShowFloatingWebcamPreview } from "../floatingWebcamPreview";
 import { useWebcamPreviewGeometry } from "./useWebcamPreviewGeometry";
@@ -7,6 +16,7 @@ import { useWebcamPreviewPointer } from "./useWebcamPreviewPointer";
 export function useWebcamPreviewOverlay({
 	webcamEnabled,
 	webcamDeviceId,
+	webcamRecordingError,
 	showWebcamControls,
 	webcamPopoverOpen,
 	hudOverlayMousePassthroughSupported,
@@ -14,6 +24,7 @@ export function useWebcamPreviewOverlay({
 }: {
 	webcamEnabled: boolean;
 	webcamDeviceId?: string;
+	webcamRecordingError?: string | null;
 	showWebcamControls: boolean;
 	webcamPopoverOpen: boolean;
 	hudOverlayMousePassthroughSupported: boolean | null;
@@ -49,12 +60,55 @@ export function useWebcamPreviewOverlay({
 	useEffect(() => {
 		setWebcamPreviewSettings(loadEditorPreferences().webcam);
 	}, [editorMode, webcamEnabled]);
-	const [showFloatingWebcamPreview, setShowFloatingWebcamPreview] = useState(true);
+	const [showFloatingWebcamPreview, setShowFloatingWebcamPreviewState] = useState(true);
+	const showFloatingWebcamPreviewRef = useRef(true);
+	const floatingPreviewEditedRef = useRef(false);
+	// Stays false until the saved choice is read, so a preview saved as hidden never flashes.
+	const [floatingPreviewChoiceLoaded, setFloatingPreviewChoiceLoaded] = useState(false);
+	// Restore the saved show/hide choice so it survives app restarts.
+	useEffect(() => {
+		if (typeof window.electronAPI?.getRecordingPreferences !== "function") {
+			setFloatingPreviewChoiceLoaded(true);
+			return;
+		}
+		void window.electronAPI.getRecordingPreferences().then(
+			(result) => {
+				setFloatingPreviewChoiceLoaded(true);
+				if (floatingPreviewEditedRef.current || !result.success) return;
+				if (typeof result.floatingWebcamPreviewVisible !== "boolean") return;
+				showFloatingWebcamPreviewRef.current = result.floatingWebcamPreviewVisible;
+				setShowFloatingWebcamPreviewState(result.floatingWebcamPreviewVisible);
+			},
+			() => {
+				// Keep the default (shown) if saved preferences can't be read.
+				setFloatingPreviewChoiceLoaded(true);
+			},
+		);
+	}, []);
+	/**
+	 * Shows or hides the floating webcam preview and saves the choice.
+	 * A toggle made before the saved choice loads wins over the saved value.
+	 */
+	const setShowFloatingWebcamPreview = useCallback((value: SetStateAction<boolean>) => {
+		floatingPreviewEditedRef.current = true;
+		setFloatingPreviewChoiceLoaded(true);
+		const current = showFloatingWebcamPreviewRef.current;
+		const next = typeof value === "function" ? value(current) : value;
+		if (next === current) return;
+		showFloatingWebcamPreviewRef.current = next;
+		setShowFloatingWebcamPreviewState(next);
+		void window.electronAPI?.setRecordingPreferences?.({ floatingWebcamPreviewVisible: next });
+	}, []);
 	const webcamPreviewRef = useRef<HTMLVideoElement | null>(null);
 	const recordingWebcamPreviewRef = useRef<HTMLVideoElement | null>(null);
 	const previewStreamRef = useRef<MediaStream | null>(null);
+	const [previewFailure, setPreviewFailure] = useState<{
+		deviceId: string | undefined;
+		message: string;
+	} | null>(null);
 	const showRecordingWebcamPreview =
 		webcamEnabled &&
+		floatingPreviewChoiceLoaded &&
 		canShowFloatingWebcamPreview(
 			showFloatingWebcamPreview,
 			hudOverlayMousePassthroughSupported,
@@ -62,12 +116,12 @@ export function useWebcamPreviewOverlay({
 	const shouldStreamWebcamPreview =
 		!editorMode &&
 		webcamEnabled &&
+		!webcamRecordingError &&
 		(showRecordingWebcamPreview || (showWebcamControls && webcamPopoverOpen));
 	const geometry = useWebcamPreviewGeometry({ hudBarRef, showRecordingWebcamPreview });
 	const pointer = useWebcamPreviewPointer({
 		webcamEnabled,
 		showRecordingWebcamPreview,
-		setShowFloatingWebcamPreview,
 		geometry,
 	});
 
@@ -104,6 +158,8 @@ export function useWebcamPreviewOverlay({
 
 	useEffect(() => {
 		let mounted = true;
+		let capture: WebcamCapture | undefined;
+		setPreviewFailure(null);
 
 		const startPreview = async () => {
 			if (!shouldStreamWebcamPreview) {
@@ -111,32 +167,20 @@ export function useWebcamPreviewOverlay({
 			}
 
 			try {
-				const previewStream = await navigator.mediaDevices.getUserMedia({
-					video: webcamDeviceId
-						? {
-								deviceId: { exact: webcamDeviceId },
-								width: { ideal: 320 },
-								height: { ideal: 320 },
-								frameRate: { ideal: 60, max: 60 },
-							}
-						: {
-								width: { ideal: 320 },
-								height: { ideal: 320 },
-								frameRate: { ideal: 60, max: 60 },
-							},
-					audio: false,
-				});
+				capture = await acquireWebcamCapture(webcamDeviceId);
 
 				if (!mounted) {
-					previewStream.getTracks().forEach((track) => track.stop());
+					capture.release();
 					return;
 				}
 
-				previewStreamRef.current = previewStream;
+				previewStreamRef.current = capture.stream;
 				attachPreviewStreamToNode(webcamPreviewRef.current);
 				attachPreviewStreamToNode(recordingWebcamPreviewRef.current);
 			} catch (error) {
+				if (!mounted) return;
 				console.warn("Failed to start live webcam preview:", error);
+				setPreviewFailure({ deviceId: webcamDeviceId, message: getErrorMessage(error) });
 			}
 		};
 
@@ -154,7 +198,7 @@ export function useWebcamPreviewOverlay({
 					videoElement.pause();
 					videoElement.srcObject = null;
 				});
-			previewStream?.getTracks().forEach((track) => track.stop());
+			capture?.release();
 			if (previewStreamRef.current === previewStream) {
 				previewStreamRef.current = null;
 			}
@@ -162,6 +206,12 @@ export function useWebcamPreviewOverlay({
 	}, [attachPreviewStreamToNode, shouldStreamWebcamPreview, webcamDeviceId]);
 
 	return {
+		editorMode,
+		webcamPreviewError:
+			webcamRecordingError ??
+			(shouldStreamWebcamPreview && previewFailure?.deviceId === webcamDeviceId
+				? (previewFailure?.message ?? null)
+				: null),
 		webcamPreviewRoundness,
 		webcamPreviewShape,
 		showFloatingWebcamPreview,

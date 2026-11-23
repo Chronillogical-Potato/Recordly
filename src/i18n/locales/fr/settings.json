@@ -3,6 +3,7 @@
 		"level": "Niveau de zoom",
 		"selectRegion": "Sélectionnez une zone de zoom à ajuster",
 		"deleteZoom": "Supprimer le zoom",
+		"clearAllZooms": "Supprimer tous les zooms",
 		"modeAuto": "Automatique",
 		"modeManual": "Manuel",
 		"modeManualDescription": "Définir un point de focus fixe pour ce zoom",
@@ -35,6 +36,7 @@
 		"show": "Afficher",
 		"showCursor": "Afficher le curseur",
 		"loopCursor": "Boucler le curseur",
+		"alwaysUsePointerCursor": "Toujours utiliser le curseur par défaut",
 		"cursorStyle": "Style du curseur",
 		"cursorStyleOptions": {
 			"macos": "macOS",
@@ -252,6 +254,8 @@
 		"animationRise": "Remontée",
 		"animationPop": "Apparition",
 		"bottomOffset": "Décalage inférieur",
+		"horizontalPosition": "Position horizontale",
+		"verticalPosition": "Position verticale",
 		"maxWidth": "Largeur max",
 		"boxRadius": "Rayon de la boîte",
 		"backgroundOpacity": "Opacité de l’arrière-plan",
@@ -293,7 +297,8 @@
 		"ratioWidth": "Largeur",
 		"ratioHeight": "Hauteur",
 		"ratioHint": "Choisissez un préréglage ou saisissez votre propre format (de 1:20 à 20:1).",
-		"freeform": "Libre"
+		"freeform": "Libre",
+		"pixelFields": "Pixels"
 	},
 	"background": {
 		"title": "Arrière-plan",
@@ -512,7 +517,7 @@
 		"recordingDescription": "Ces préférences s’appliquent aux nouveaux enregistrements.",
 		"motionScope": "Les modifications s’appliquent à ce projet et sont mémorisées pour les nouveaux projets. Les projets enregistrés conservent leurs propres réglages.",
 		"hideControls": "Masquer les commandes d’enregistrement dans la vidéo capturée",
-		"hideControlsDescription": "Les commandes restent visibles sur le bureau, mais sont exclues de la vidéo pendant l’enregistrement. Au repos, elles peuvent apparaître dans d’autres captures d’écran.",
+		"hideControlsDescription": "Pendant l’enregistrement, les commandes restent visibles sur votre bureau et sont masquées dans la vidéo. Elles peuvent aussi disparaître lors du partage d’écran ou dans les applications de bureau à distance.",
 		"storage": "Stockage",
 		"storageDescription": "Retrouvez vos enregistrements et projets sauvegardés sur cet ordinateur.",
 		"loadingFolder": "Chargement de l’emplacement du dossier…",

@@ -1,19 +1,35 @@
 # Recordly cloud sharing
 
-Recordly's **Publish** menu can save the current edit as a local file or create a shared link. The account menu opens sign-in. Sharing renders an MP4 to a temporary file, uploads it to Recordly Share, finalizes its metadata, and removes the temporary file when the dialog closes.
+Recordly's **Publish** menu can save the current edit as a local file or create a shared link. The account menu opens sign-in. For **Create share link**, one progress bar in the Publish menu tracks both export and upload. When the link is ready, the same menu shows the preview and **Copy link**. Sharing renders an MP4 to a temporary file, uploads it to Recordly Share, and finalizes its metadata. The temporary file stays until the share controller unmounts, then Recordly removes it.
 
-Development defaults to the local endpoint when `VITE_CLOUD_SHARE_ENDPOINT` is unset:
+While rendering for either destination, the loader shuffles its lines, about 80% sensible and 20% playful.
 
-```text
-http://localhost:8787/api/upload
-```
+Set `VITE_CLOUD_SHARE_ENDPOINT` in `.env` before building. Development falls
+back to `http://localhost:8787/api/upload` when the setting is unset. Packaged
+builds require an explicit endpoint to enable cloud sharing.
 
-The endpoint is intentionally not user-configurable. Packaged builds require an
-explicit `VITE_CLOUD_SHARE_ENDPOINT`; without it, cloud sharing is unavailable.
-Production releases target `https://videos.recordly.dev/api/upload`. The production
-service must be deployed and verified before release. Publishing requires the
-user's Recordly access token. No share API secret is exposed in the app. Hosted deployment and subscription
-operations are maintained with the separate private service.
+`npm run env:pull` fills in public sign-in settings and copies the repository's
+Cloud endpoint into `.env` when that setting is missing or blank. Recordly's
+GitHub variable points to `https://videos.recordly.dev/api/upload`. Local builds
+using the pulled endpoint publish to the production Recordly Cloud service.
+
+To publish to a local Worker, set
+`VITE_CLOUD_SHARE_ENDPOINT=http://localhost:8787/api/upload` in `.env`.
+`npm run env:pull` preserves that configured endpoint. Before starting Vite, unset
+`VITE_CLOUD_SHARE_ENDPOINT` in your shell and remove any conflicting value from
+`.env.local` or a mode-specific file such as `.env.development.local`. Those
+settings take precedence over `.env`.
+
+Production releases use the same Recordly Cloud endpoint. The service must be
+deployed and verified before release. Publishing requires the user's Recordly
+access token. No share API secret is exposed in the app. Hosted deployment and
+subscription operations are maintained with the separate private service.
+
+Under **Account settings → Plan & billing**, **Manage subscription** opens Stripe when the
+billing portal is available. If a Cloud account has no portal, as can happen with
+complimentary access, the same button explains that no portal is available and links
+to Recordly support by email. Plan details update automatically when Recordly regains
+focus.
 
 ## Publishing protocol
 

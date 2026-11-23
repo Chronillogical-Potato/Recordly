@@ -140,6 +140,7 @@ export function EditorShell(props: Props) {
 		clipRegions: timeline.clipRegions,
 		zoomRegions: timeline.zoomRegions,
 		cursorTelemetry: editing.cursor.normalizedCursorTelemetry,
+		recordingZoomMarkers: editing.cursor.recordingZoomMarkers,
 		cursorTelemetrySourcePath: timeline.cursorTelemetrySourcePath,
 		onZoomSuggested: editing.zoomCommands.handleZoomSuggested,
 	});
@@ -256,6 +257,8 @@ export function EditorShell(props: Props) {
 			user={auth.user}
 			configured={auth.configured}
 			callbackError={auth.callbackError}
+			authenticationVersion={auth.callbackVersion}
+			authCallbackPending={auth.callbackActivity.pending}
 		/>
 	);
 	const editorDialogs = (
@@ -374,6 +377,9 @@ export function EditorShell(props: Props) {
 						canUndo={history.canUndo}
 						canRedo={history.canRedo}
 						handleOpenProjectBrowser={() => openDashboard()}
+						handleOpenRecordingHud={
+							projectController.openActions.handleOpenRecordingHud
+						}
 						handleUndo={history.handleUndo}
 						handleRedo={history.handleRedo}
 						handleProjectNameSubmit={saveActions.handleProjectNameSubmit}
@@ -479,12 +485,19 @@ export function EditorShell(props: Props) {
 								}}
 								settingsPanelProps={{
 									...settingsPanelProps,
+									onClearZooms: () => ui.timelineRef.current?.clearAllZooms(),
 									accountUser: auth.user,
 									onShowOnboarding: showOnboarding,
 								}}
 							/>
 							<EditorPreviewPanel
 								t={t}
+								onImportVideoClip={() => void library.importVideoFile()}
+								canImportVideoClip={
+									Boolean(project.videoSourcePath) &&
+									!library.busy &&
+									!library.importing
+								}
 								videoPath={project.videoPath}
 								previewVersion={ui.previewVersion}
 								aspectRatio={ui.aspectRatio}
@@ -543,6 +556,7 @@ export function EditorShell(props: Props) {
 								normalizedCursorTelemetry={cursor.normalizedCursorTelemetry}
 								currentTime={ui.currentTime}
 								handleSelectAnnotation={handleSelectAnnotation}
+								onDuplicateSelectedRegion={editing.duplicateSelectedRegion}
 							/>
 						</AutoZoomNudgeContext.Provider>
 					</div>

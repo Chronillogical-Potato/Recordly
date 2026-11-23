@@ -10,6 +10,7 @@ import {
 	hasNonDefaultSourceTrackSettings,
 	MIN_SPEED_REGION_DELTA_MS,
 	MP4_AUDIO_CODEC,
+	resolveAudioTimestampOffsetUs,
 	type TrimLikeRegion,
 } from "./audioProcessorShared";
 import { AudioTranscodeProcessor } from "./audioTranscodeProcessor";
@@ -21,6 +22,7 @@ export {
 	getSourceTrackIdFromPath,
 	hasNonDefaultSourceTrackSettings,
 	isAacAudioEncodingSupported,
+	resolveAudioTimestampOffsetUs,
 	softLimitOfflineMixPeaksInPlace,
 } from "./audioProcessorShared";
 
@@ -58,7 +60,7 @@ export class AudioProcessor extends AudioTranscodeProcessor {
 				if (done || !chunk) break;
 
 				if (passthroughTimestampOffsetUs === null) {
-					passthroughTimestampOffsetUs = chunk.timestamp;
+					passthroughTimestampOffsetUs = resolveAudioTimestampOffsetUs(chunk.timestamp);
 				}
 
 				const normalizedTimestamp = Math.max(
@@ -180,7 +182,9 @@ export class AudioProcessor extends AudioTranscodeProcessor {
 			const sidecarDemuxer = await this.loadAudioFileDemuxer(routingPolicy.playbackPaths[0]);
 			if (sidecarDemuxer) {
 				try {
-					await this.processTrimOnlyAudio(sidecarDemuxer, muxer, sortedTrims);
+					if (await this.processTrimOnlyAudio(sidecarDemuxer, muxer, sortedTrims)) {
+						return;
+					}
 				} finally {
 					try {
 						sidecarDemuxer.destroy();
@@ -188,11 +192,10 @@ export class AudioProcessor extends AudioTranscodeProcessor {
 						/* cleanup */
 					}
 				}
-				return;
 			}
-			// Fallback to offline rendering if demuxer creation failed
+			if (this.cancelled) return;
 			console.warn(
-				"[AudioProcessor] Fast sidecar demux failed, falling back to offline rendering",
+				"[AudioProcessor] Could not read a supported sidecar audio track; trying offline rendering",
 			);
 			await this.renderAndMuxOfflineAudio(
 				videoUrl,

@@ -7,12 +7,14 @@ import { RecordlyMark } from "@/components/ui/RecordlyMark";
 import { useScopedT } from "@/contexts/I18nContext";
 import "./Onboarding.css";
 
-type OnboardingStage = "account" | "permissions";
+export type OnboardingStage = "account" | "permissions" | "upgrade";
 
 export function OnboardingLayout({
 	stage,
 	onStageChange,
 	canViewPermissions,
+	showPermissions = true,
+	canViewUpgrade,
 	showNavigation = true,
 	carousel = Boolean(onStageChange),
 	footer,
@@ -21,6 +23,8 @@ export function OnboardingLayout({
 	stage: OnboardingStage;
 	onStageChange?: (stage: OnboardingStage) => void;
 	canViewPermissions: boolean;
+	showPermissions?: boolean;
+	canViewUpgrade?: boolean;
 	showNavigation?: boolean;
 	carousel?: boolean;
 	footer?: ReactNode;
@@ -29,9 +33,14 @@ export function OnboardingLayout({
 	const t = useScopedT("onboarding");
 	const stages = [
 		{ key: "account", label: t("account") },
-		{ key: "permissions", label: t("permissions") },
+		...(showPermissions ? [{ key: "permissions" as const, label: t("permissions") }] : []),
+		...(canViewUpgrade === undefined
+			? []
+			: [{ key: "upgrade" as const, label: t("upgrade", "Upgrade") }]),
 	] as const;
 	const reduceMotion = useReducedMotion();
+	const withIntro =
+		new URLSearchParams(window.location.search).get("welcomeSoundtrack") === "intro";
 	const transition = { duration: reduceMotion ? 0 : 0.28, ease: [0.22, 1, 0.36, 1] as const };
 	return (
 		<div
@@ -51,13 +60,16 @@ export function OnboardingLayout({
 				transition={transition}
 				className="onboarding-artwork relative m-2 overflow-hidden rounded-t-2xl"
 			>
-				<RecordlyDemoVideo className="absolute inset-0" />
+				<RecordlyDemoVideo
+					className="absolute inset-0"
+					waitForOnboardingIntro={withIntro}
+				/>
 			</motion.div>
 			<motion.div
 				layout={reduceMotion || carousel ? false : "position"}
 				layoutDependency={stage}
 				transition={transition}
-				className={`onboarding-stage-content grid min-h-0 ${stage === "account" ? "shrink-0" : "shrink overflow-hidden"}`}
+				className={`onboarding-stage-content relative grid min-h-0 ${stage === "account" ? "shrink-0" : "shrink overflow-hidden"}`}
 			>
 				{children}
 			</motion.div>
@@ -77,7 +89,10 @@ export function OnboardingLayout({
 							type="button"
 							aria-label={label}
 							aria-current={stage === key ? "page" : undefined}
-							disabled={key === "permissions" && !canViewPermissions}
+							disabled={
+								(key === "permissions" && !canViewPermissions) ||
+								(key === "upgrade" && !canViewUpgrade)
+							}
 							onClick={() => onStageChange?.(key)}
 							className="group flex size-8 cursor-pointer items-center justify-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-40"
 						>
@@ -116,15 +131,17 @@ export function OnboardingHeader({
 	title,
 	description,
 	centered = false,
+	animated = true,
 }: {
 	title: ReactNode;
 	description?: string;
 	centered?: boolean;
+	animated?: boolean;
 }) {
 	const reduceMotion = useReducedMotion();
 	return (
 		<motion.div
-			initial={reduceMotion ? false : { opacity: 0, y: 12 }}
+			initial={reduceMotion || !animated ? false : { opacity: 0, y: 12 }}
 			animate={{ opacity: 1, y: 0 }}
 			transition={{ duration: reduceMotion ? 0 : 0.34, ease: [0.22, 1, 0.36, 1] }}
 		>

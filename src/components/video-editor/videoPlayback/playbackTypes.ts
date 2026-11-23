@@ -117,6 +117,7 @@ export interface VideoPlaybackProps {
 	cursorSway?: number;
 	cursorIdleHide?: CursorIdleHideSettings;
 	volume?: number;
+	previewResolutionScale?: number;
 	suspendRendering?: boolean;
 }
 
@@ -140,6 +141,7 @@ export interface VideoPlaybackRef {
 	pause: () => void;
 	getAnnotationPlacement?: () => Pick<AnnotationRegion, "position" | "size"> | null;
 	refreshFrame: () => Promise<void>;
+	regenerateFrame: () => void;
 	cancelCaptionEdit: () => void;
 }
 

@@ -8,6 +8,7 @@ import {
 import { useI18n, useScopedT } from "@/contexts/I18nContext";
 import type { WebcamShape } from "../../video-editor/types";
 import { getWebcamClipPath } from "../../video-editor/webcamOverlay";
+import { WebcamUnavailable } from "../WebcamUnavailable";
 import { useLaunchPopoverCoordinator } from "./LaunchPopoverCoordinator";
 import type { DeviceOption } from "./launchPopoverTypes";
 import { DropdownItem, HudPopover } from "./PopoverScaffold";
@@ -24,6 +25,7 @@ export function WebcamPopover({
 	showFloatingWebcamPreview,
 	onToggleFloatingPreview,
 	showWebcamControls,
+	previewError,
 	roundness,
 	shape,
 	setWebcamPreviewNode,
@@ -41,6 +43,7 @@ export function WebcamPopover({
 	showFloatingWebcamPreview: boolean;
 	onToggleFloatingPreview: () => void;
 	showWebcamControls: boolean;
+	previewError: string | null;
 	roundness: number;
 	shape?: WebcamShape;
 	setWebcamPreviewNode: (node: HTMLVideoElement | null) => void;
@@ -54,6 +57,11 @@ export function WebcamPopover({
 	const { isOpen, requestOpen, requestClose } = useLaunchPopoverCoordinator();
 	const open = isOpen(POPOVER_ID);
 	const cameraAllowed = cameraPermission === "granted";
+	const cameraState = t(webcamEnabled ? "recording.on" : "recording.off");
+	const tooltip = t("recording.settingValue", "{{setting}}: {{value}}", {
+		setting: t("recording.cameraSettings", "Camera settings"),
+		value: cameraState,
+	});
 
 	return (
 		<HudPopover
@@ -71,6 +79,8 @@ export function WebcamPopover({
 			trigger={trigger}
 			align="center"
 			label={t("recording.cameraSettings", "Camera settings")}
+			tooltip={tooltip}
+			description={cameraState}
 		>
 			<div className="px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--launch-label)]">
 				{t("recording.webcam")}
@@ -108,18 +118,22 @@ export function WebcamPopover({
 			)}
 			{showWebcamControls && (
 				<div className="flex justify-center px-3 py-2">
-					<div className="relative h-24 w-24">
-						<video
-							ref={setWebcamPreviewNode}
-							className="h-full w-full object-cover bg-[var(--launch-hover)]"
-							muted
-							playsInline
-							style={{
-								transform: "scaleX(-1)",
-								clipPath: getWebcamClipPath(roundness, 96, 96, shape),
-							}}
-						/>
-					</div>
+					{previewError ? (
+						<WebcamUnavailable error={previewError} />
+					) : (
+						<div className="relative h-24 w-24">
+							<video
+								ref={setWebcamPreviewNode}
+								className="h-full w-full object-cover bg-[var(--launch-hover)]"
+								muted
+								playsInline
+								style={{
+									transform: "scaleX(-1)",
+									clipPath: getWebcamClipPath(roundness, 96, 96, shape),
+								}}
+							/>
+						</div>
+					)}
 				</div>
 			)}
 			{cameraAllowed &&

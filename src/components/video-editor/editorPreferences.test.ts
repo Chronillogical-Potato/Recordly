@@ -4,13 +4,19 @@ import {
 	DEFAULT_EDITOR_PREFERENCES,
 	EDITOR_PREFERENCES_STORAGE_KEY,
 	EDITOR_PRESETS_STORAGE_KEY,
+	getPaddingPreference,
 	loadEditorPreferences,
 	loadEditorPresets,
 	normalizeEditorPreferences,
 	saveEditorPreferences,
 	saveEditorPresets,
 } from "./editorPreferences";
-import { DEFAULT_AUTO_CAPTION_SETTINGS, DEFAULT_CROP_REGION } from "./types";
+import {
+	DEFAULT_AUTO_CAPTION_SETTINGS,
+	DEFAULT_CROP_REGION,
+	DEFAULT_PADDING,
+	DEFAULT_WINDOW_PADDING,
+} from "./types";
 
 describe("border radius preferences", () => {
 	it("migrates legacy pixels once and marks the stored unit", () => {
@@ -83,12 +89,13 @@ describe("editorPreferences", () => {
 		Reflect.deleteProperty(globalThis, "electronAPI");
 	});
 
-	it("starts from 2.0 defaults while retaining the v1.4 resource library", () => {
+	it("starts from 2.0 defaults while retaining v1.4 padding for windows and the resource library", () => {
 		const legacyKey = "recordly.editor.preferences";
 		const legacy = {
 			wallpaper: "/wallpapers/tahoe-light.jpg",
 			shadowIntensity: 0.67,
 			exportQuality: "source",
+			padding: 0,
 			customWallpapers: ["/fixtures/background.jpg"],
 			whisperModelPath: "/fixtures/whisper.bin",
 		};
@@ -99,6 +106,8 @@ describe("editorPreferences", () => {
 			shadowIntensity: DEFAULT_EDITOR_PREFERENCES.shadowIntensity,
 			exportQuality: "medium",
 			advancedExportSettings: false,
+			screenPadding: DEFAULT_PADDING,
+			windowPadding: DEFAULT_PADDING,
 			customWallpapers: legacy.customWallpapers,
 			whisperModelPath: legacy.whisperModelPath,
 		});
@@ -106,6 +115,8 @@ describe("editorPreferences", () => {
 		saveEditorPreferences({ shadowIntensity: 0.8 });
 		const saved = {
 			shadowIntensity: 0.8,
+			screenPadding: DEFAULT_PADDING,
+			windowPadding: DEFAULT_PADDING,
 			customWallpapers: legacy.customWallpapers,
 			whisperModelPath: legacy.whisperModelPath,
 		};
@@ -435,6 +446,7 @@ describe("editorPreferences", () => {
 			connectedZoomEasing: DEFAULT_EDITOR_PREFERENCES.connectedZoomEasing,
 			showCursor: false,
 			loopCursor: true,
+			alwaysUsePointerCursor: true,
 			cursorStyle: "figma",
 			cursorSize: 3,
 			cursorSmoothing: 1.25,
@@ -443,7 +455,8 @@ describe("editorPreferences", () => {
 			cursorClickBounceDuration: 350,
 			cursorSway: 1.5,
 			borderRadius: 18,
-			padding: { top: 30, right: 30, bottom: 30, left: 30, linked: true },
+			screenPadding: { top: 30, right: 30, bottom: 30, left: 30, linked: true },
+			windowPadding: { top: 40, right: 10, bottom: 10, left: 10, linked: false },
 			aspectRatio: "4:5",
 			exportEncodingMode: "quality",
 			exportBackendPreference: DEFAULT_EDITOR_PREFERENCES.exportBackendPreference,
@@ -468,6 +481,7 @@ describe("editorPreferences", () => {
 			zoomInOverlapMs: 200,
 			showCursor: false,
 			loopCursor: true,
+			alwaysUsePointerCursor: true,
 			cursorStyle: "figma",
 			cursorSize: DEFAULT_EDITOR_PREFERENCES.cursorSize,
 			cursorSmoothing: DEFAULT_EDITOR_PREFERENCES.cursorSmoothing,
@@ -476,7 +490,8 @@ describe("editorPreferences", () => {
 			cursorClickBounceDuration: DEFAULT_EDITOR_PREFERENCES.cursorClickBounceDuration,
 			cursorSway: 1.5,
 			borderRadius: 18,
-			padding: { top: 30, right: 30, bottom: 30, left: 30, linked: true },
+			screenPadding: { top: 30, right: 30, bottom: 30, left: 30, linked: true },
+			windowPadding: { top: 40, right: 10, bottom: 10, left: 10, linked: false },
 			aspectRatio: "4:5",
 			exportEncodingMode: "quality",
 			exportFormat: "gif",
@@ -487,6 +502,41 @@ describe("editorPreferences", () => {
 			customAspectHeight: "5",
 			customWallpapers: ["data:image/jpeg;base64,abc"],
 		});
+	});
+
+	it("starts with zero screen padding and 25% window padding without saved preferences", () => {
+		const prefs = loadEditorPreferences();
+		expect(getPaddingPreference(prefs, "screen")).toEqual(DEFAULT_PADDING);
+		expect(getPaddingPreference(prefs, null)).toEqual(DEFAULT_PADDING);
+		expect(getPaddingPreference(prefs, "window")).toEqual(DEFAULT_WINDOW_PADDING);
+		expect(DEFAULT_PADDING.top).toBe(0);
+		expect(DEFAULT_WINDOW_PADDING.top).toBe(25);
+	});
+
+	it("migrates legacy shared padding to windows only and saves it under the new key", () => {
+		const padding = { top: 30, bottom: 5, left: 15, right: 20, linked: false };
+		const settings = stubElectronSettings({
+			[EDITOR_PREFERENCES_STORAGE_KEY]: { padding },
+		});
+
+		const prefs = loadEditorPreferences();
+		expect(getPaddingPreference(prefs, "screen")).toEqual(DEFAULT_PADDING);
+		expect(getPaddingPreference(prefs, "window")).toEqual(padding);
+
+		saveEditorPreferences({ screenPadding: DEFAULT_WINDOW_PADDING });
+		expect(settings.get(EDITOR_PREFERENCES_STORAGE_KEY)).not.toHaveProperty("padding");
+		expect(loadEditorPreferences()).toMatchObject({
+			screenPadding: DEFAULT_WINDOW_PADDING,
+			windowPadding: padding,
+		});
+	});
+
+	it("prefers an explicitly saved window setting over the legacy shared setting", () => {
+		stubElectronSettings({
+			[EDITOR_PREFERENCES_STORAGE_KEY]: { padding: 40, windowPadding: DEFAULT_PADDING },
+		});
+
+		expect(getPaddingPreference(loadEditorPreferences(), "window")).toEqual(DEFAULT_PADDING);
 	});
 
 	it("saves custom Whisper paths", () => {

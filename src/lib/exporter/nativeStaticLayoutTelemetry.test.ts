@@ -1,7 +1,45 @@
 import { describe, expect, it } from "vitest";
+import type { CursorTelemetryPoint } from "@/components/video-editor/types";
+import { applyDefaultCursorShape } from "@/components/video-editor/videoPlayback/cursorShapeOverride";
 import { buildNativeStaticLayoutCursorTelemetry } from "./nativeStaticLayoutTelemetry";
 
 describe("buildNativeStaticLayoutCursorTelemetry", () => {
+	it("passes default cursor shapes to the native exporter while preserving click feedback", () => {
+		const source: CursorTelemetryPoint[] = [
+			{ timeMs: 0, cx: 0.5, cy: 0.5, cursorType: "text" },
+			{ timeMs: 600, cx: 0.7, cy: 0.5, cursorType: "pointer" },
+			{ timeMs: 1000, cx: 0.7, cy: 0.5, interactionType: "click", mouseButton: 1 },
+			{ timeMs: 1600, cx: 0.7, cy: 0.5, interactionType: "mouseup", mouseButton: 1 },
+		];
+		const options = { frameRate: 30, durationSec: 2, cursorStyle: "windows11" };
+		const original = buildNativeStaticLayoutCursorTelemetry(source, options)!;
+		const overridden = buildNativeStaticLayoutCursorTelemetry(
+			applyDefaultCursorShape(source, true),
+			options,
+		)!;
+		expect(original.some((sample) => sample.cursorType === "pointer")).toBe(true);
+		expect(overridden.every((sample) => sample.cursorTypeIndex === 0)).toBe(true);
+		expect(overridden.some((sample) => (sample.bounceScale ?? 1) < 1)).toBe(true);
+		expect(source[0].cursorType).toBe("text");
+		expect(applyDefaultCursorShape(source, false)).toBe(source);
+	});
+
+	it("keeps legacy cursor indexes and appends the Windows move and diagonal cursors", () => {
+		const cursorTypes = [
+			"resize-ew",
+			"resize-ns",
+			"not-allowed",
+			"move",
+			"resize-nwse",
+			"resize-nesw",
+		] as const;
+		const samples = buildNativeStaticLayoutCursorTelemetry(
+			cursorTypes.map((cursorType, i) => ({ timeMs: i * 250, cx: 0.5, cy: 0.5, cursorType })),
+			{ frameRate: 24, durationSec: 2, cursorStyle: "windows11" },
+		)!;
+		expect(samples.map((sample) => sample.cursorTypeIndex)).toEqual([6, 7, 8, 9, 10, 11]);
+	});
+
 	it("exports a sustained press and releases after dragging", () => {
 		const samples = buildNativeStaticLayoutCursorTelemetry(
 			[

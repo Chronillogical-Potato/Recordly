@@ -10,10 +10,16 @@ import type { useZoomRegionCommands } from "../hooks/useZoomRegionCommands";
 import { SettingsPanel } from "../SettingsPanel";
 import type { useAppearanceState } from "../state/useAppearanceState";
 import type { useTimelineState } from "../state/useTimelineState";
-import { type EditorEffectSection, mapTimelineTimeToSourceTime } from "../types";
+import {
+	type CaptureSourceKind,
+	type EditorEffectSection,
+	getDefaultPaddingForCaptureSource,
+	mapTimelineTimeToSourceTime,
+} from "../types";
 
 type Input = {
 	activeEffectSection: EditorEffectSection;
+	onDuplicateSelectedRegion: () => void;
 	appearance: ReturnType<typeof useAppearanceState>;
 	timeline: ReturnType<typeof useTimelineState>;
 	zoomCommands: ReturnType<typeof useZoomRegionCommands>;
@@ -34,6 +40,7 @@ type Input = {
 	whisperModelDownloadProgress: number;
 	isGeneratingCaptions: boolean;
 	sessionNativeCaptureUnavailable: boolean;
+	sessionCaptureSourceKind: CaptureSourceKind | null;
 	setNativeCaptureUnavailableModalOpen: Dispatch<SetStateAction<boolean>>;
 	handleUploadWebcam: () => void;
 	handleClearWebcam: () => void;
@@ -62,6 +69,7 @@ export function useEditorSettingsPanelProps(input: Input): ComponentProps<typeof
 		whisperModelDownloadProgress,
 		isGeneratingCaptions,
 		sessionNativeCaptureUnavailable,
+		sessionCaptureSourceKind,
 		setNativeCaptureUnavailableModalOpen,
 		handleUploadWebcam,
 		handleClearWebcam,
@@ -80,6 +88,7 @@ export function useEditorSettingsPanelProps(input: Input): ComponentProps<typeof
 
 	return {
 		...clipAudioReset,
+		onDuplicateSelectedRegion: input.onDuplicateSelectedRegion,
 		panelMode: "editor",
 		activeEffectSection,
 		selected: appearance.wallpaper,
@@ -133,6 +142,8 @@ export function useEditorSettingsPanelProps(input: Input): ComponentProps<typeof
 		onShowCursorChange: handleShowCursorChange,
 		loopCursor: appearance.loopCursor,
 		onLoopCursorChange: appearance.setLoopCursor,
+		alwaysUsePointerCursor: appearance.alwaysUsePointerCursor,
+		onAlwaysUsePointerCursorChange: appearance.setAlwaysUsePointerCursor,
 		cursorStyle: appearance.cursorStyle,
 		onCursorStyleChange: appearance.setCursorStyle,
 		cursorSize: appearance.cursorSize,
@@ -183,6 +194,7 @@ export function useEditorSettingsPanelProps(input: Input): ComponentProps<typeof
 		onClearWebcam: handleClearWebcam,
 		padding: appearance.padding,
 		onPaddingChange: appearance.setPadding,
+		defaultPadding: getDefaultPaddingForCaptureSource(sessionCaptureSourceKind),
 		cropRegion: appearance.cropRegion,
 		onCropChange: appearance.setCropRegion,
 		aspectRatio,

@@ -1,5 +1,6 @@
 import { toast } from "@/components/ui/toast";
 import { translate } from "@/i18n/runtime";
+import { waitForBrowserCaptureFrame } from "./browserScreenCapture";
 import {
 	AUDIO_BITRATE_SYSTEM,
 	AUDIO_BITRATE_VOICE,
@@ -16,10 +17,90 @@ import {
 import type { RecorderContext } from "./recorderContext";
 import { RecordingFileWriter } from "./recordingFileWriter";
 import { getVideoExtensionForMimeType } from "./recordingMimeType";
+
+const PORTAL_RECORDER_START_TIMEOUT_MS = 2000;
+
+function observeRecorderStart(recorder: MediaRecorder, requestedAt: number) {
+	const events = new AbortController();
+	const cancel = () => events.abort();
+	const startedAt = new Promise<number | null>((resolve) => {
+		const timeout = setTimeout(() => {
+			// Keep the existing clock if Chromium is recording but its event is delayed.
+			if (recorder.state === "recording") resolve(requestedAt);
+			cancel();
+		}, PORTAL_RECORDER_START_TIMEOUT_MS);
+		events.signal.addEventListener(
+			"abort",
+			() => {
+				clearTimeout(timeout);
+				resolve(null);
+			},
+			{ once: true },
+		);
+		const options = { once: true, signal: events.signal };
+		recorder.addEventListener(
+			"start",
+			() => {
+				resolve(Date.now());
+				cancel();
+			},
+			options,
+		);
+		recorder.addEventListener("error", cancel, options);
+		recorder.addEventListener("stop", cancel, options);
+	});
+	return { startedAt, cancel };
+}
+
+function startScreenRecorder(
+	stream: MediaStream,
+	videoTrack: MediaStreamTrack,
+	mimeTypes: string[],
+	bitrates: { videoBitsPerSecond: number; audioBitsPerSecond: number | undefined },
+	waitForStart: boolean,
+) {
+	const startWithType = (mimeType?: string) => {
+		const recorder = new MediaRecorder(
+			stream,
+			createBrowserRecordingOptions({ ...bitrates, mimeType }),
+		);
+		const requestedAt = Date.now();
+		const portalStart = waitForStart ? observeRecorderStart(recorder, requestedAt) : undefined;
+		try {
+			recorder.start(RECORDER_TIMESLICE_MS);
+		} catch (error) {
+			portalStart?.cancel();
+			throw error;
+		}
+		return { recorder, mimeType, requestedAt, portalStart };
+	};
+
+	for (const mimeType of mimeTypes.slice(0, -1)) {
+		try {
+			return startWithType(mimeType);
+		} catch (error) {
+			if (
+				stream.active === false ||
+				videoTrack.readyState === "ended" ||
+				!(error instanceof DOMException) ||
+				(error.name !== "NotSupportedError" && error.name !== "InvalidStateError")
+			) {
+				throw error;
+			}
+			console.warn(
+				`Could not start the screen recorder with ${mimeType}, trying another codec:`,
+				error,
+			);
+		}
+	}
+
+	return startWithType(mimeTypes[mimeTypes.length - 1]);
+}
+
 export async function startBrowserRecorder(
 	context: Pick<
 		RecorderContext,
-		| "selectMimeType"
+		| "getMimeTypes"
 		| "stream"
 		| "recordingSessionTimestamp"
 		| "screenWriter"
@@ -36,6 +117,7 @@ export async function startBrowserRecorder(
 		| "resolvedWebcamPath"
 		| "webcamTimeOffsetMs"
 		| "hideEditorOverlayCursorByDefault"
+		| "captureSourceKind"
 		| "beginWebcamCapture"
 		| "resetRecordingClock"
 		| "webcamStartTime"
@@ -44,14 +126,16 @@ export async function startBrowserRecorder(
 		videoTrack,
 		systemAudioIncluded,
 		startWasCancelled,
+		runPortalCountdown,
 	}: {
 		videoTrack: MediaStreamTrack;
 		systemAudioIncluded: boolean;
 		startWasCancelled: () => boolean;
+		runPortalCountdown?: () => Promise<boolean>;
 	},
 ) {
 	const {
-		selectMimeType,
+		getMimeTypes,
 		stream,
 		recordingSessionTimestamp,
 		screenWriter,
@@ -68,10 +152,28 @@ export async function startBrowserRecorder(
 		resolvedWebcamPath,
 		webcamTimeOffsetMs,
 		hideEditorOverlayCursorByDefault,
+		captureSourceKind,
 		beginWebcamCapture,
 		resetRecordingClock,
 		webcamStartTime,
 	} = context;
+	if (startWasCancelled()) return;
+	if (runPortalCountdown) {
+		const frameAvailable = await waitForBrowserCaptureFrame(videoTrack);
+		if (startWasCancelled()) return;
+		if (frameAvailable && videoTrack.readyState !== "ended") {
+			const continueRecording = await runPortalCountdown();
+			if (!continueRecording || startWasCancelled()) return;
+		}
+		if (!frameAvailable || videoTrack.readyState === "ended") {
+			throw new Error(
+				translate(
+					"notifications.noFrames",
+					"No video frames were captured. Please record again.",
+				),
+			);
+		}
+	}
 
 	let {
 		width = DEFAULT_WIDTH,
@@ -83,27 +185,28 @@ export async function startBrowserRecorder(
 	height = Math.floor(height / CODEC_ALIGNMENT) * CODEC_ALIGNMENT;
 
 	const videoBitsPerSecond = computeBitrate(width, height);
-	const mimeType = selectMimeType();
-
-	console.log(
-		`Recording at ${width}x${height} @ ${frameRate ?? TARGET_FRAME_RATE}fps using ${mimeType ?? "browser default"} / ${Math.round(
-			videoBitsPerSecond / BITS_PER_MEGABIT,
-		)} Mbps`,
-	);
-
-	const hasAudio = stream.current!.getAudioTracks().length > 0;
+	const capturedStream = stream.current!;
+	const hasAudio = capturedStream.getAudioTracks().length > 0;
 	const audioBitsPerSecond = hasAudio
 		? systemAudioIncluded
 			? AUDIO_BITRATE_SYSTEM
 			: AUDIO_BITRATE_VOICE
 		: undefined;
-	const recorder = new MediaRecorder(
-		stream.current!,
-		createBrowserRecordingOptions({
+	const { recorder, mimeType, requestedAt, portalStart } = startScreenRecorder(
+		capturedStream,
+		videoTrack,
+		getMimeTypes(),
+		{
 			audioBitsPerSecond,
-			mimeType,
 			videoBitsPerSecond,
-		}),
+		},
+		Boolean(runPortalCountdown),
+	);
+
+	console.log(
+		`Recording at ${width}x${height} @ ${frameRate ?? TARGET_FRAME_RATE}fps using ${mimeType ?? "browser default"} / ${Math.round(
+			videoBitsPerSecond / BITS_PER_MEGABIT,
+		)} Mbps`,
 	);
 
 	const recordingBlobType = recorder.mimeType || mimeType || "video/webm";
@@ -120,7 +223,9 @@ export async function startBrowserRecorder(
 	screenWriter.current = writer;
 	mediaRecorder.current = recorder;
 	recorder.ondataavailable = (event) => writer.write(event.data);
+	let recordingStarted = !portalStart;
 	recorder.onstop = async () => {
+		if (!recordingStarted) return;
 		// Also covers MediaRecorder stopping itself after a write/encoder failure.
 		browserFinalizing.current = true;
 		setFinalizing(true);
@@ -173,6 +278,7 @@ export async function startBrowserRecorder(
 								timeOffsetMs: webcamTimeOffsetMs.current,
 								hideOverlayCursorByDefault:
 									hideEditorOverlayCursorByDefault.current,
+								captureSourceKind: captureSourceKind.current,
 							});
 						}
 					} finally {
@@ -212,16 +318,38 @@ export async function startBrowserRecorder(
 	recorder.onerror = () => {
 		setRecording(false);
 	};
-	const mainStartedAt = Date.now();
-	if (startWasCancelled()) return;
+	const startedAt = portalStart ? await portalStart.startedAt : requestedAt;
+	if (
+		portalStart &&
+		(startWasCancelled() || startedAt === null || recorder.state === "inactive")
+	) {
+		writer.cancel();
+		recorder.ondataavailable = null;
+		recorder.onstop = null;
+		recorder.onerror = null;
+		if (recorder.state !== "inactive") recorder.stop();
+		mediaRecorder.current = null;
+		screenWriter.current = null;
+		await writer.discard();
+		if (startWasCancelled()) return;
+		throw new Error(
+			translate(
+				"notifications.noFrames",
+				"No video frames were captured. Please record again.",
+			),
+		);
+	}
+
+	recordingStarted = true;
+	const clockStartedAt = startedAt ?? requestedAt;
 	beginWebcamCapture();
-	resetRecordingClock(mainStartedAt);
+	resetRecordingClock(clockStartedAt);
 	webcamTimeOffsetMs.current =
-		webcamStartTime.current === null ? 0 : webcamStartTime.current - mainStartedAt;
-	recorder.start(RECORDER_TIMESLICE_MS);
+		webcamStartTime.current === null ? 0 : webcamStartTime.current - clockStartedAt;
 	setRecording(true);
 	try {
-		await window.electronAPI?.setRecordingState(true);
+		if (portalStart) await window.electronAPI?.setRecordingState(true, clockStartedAt);
+		else await window.electronAPI?.setRecordingState(true);
 	} catch (stateError) {
 		console.warn("Failed to notify main process that recording started:", stateError);
 	}

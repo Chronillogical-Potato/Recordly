@@ -1,13 +1,21 @@
-import { Application, Container, Graphics, Rectangle, RendererType, Sprite } from "pixi.js";
-import type { MotionBlurFilter } from "pixi-filters/motion-blur";
-import type { ZoomBlurFilter } from "pixi-filters/zoom-blur";
+import {
+	Application,
+	Container,
+	Graphics,
+	isWebGLSupported,
+	Rectangle,
+	RendererType,
+	Sprite,
+} from "pixi.js";
 import { ensureCaptionFontLoaded } from "@/components/video-editor/captionFonts";
 import {
 	DEFAULT_CURSOR_CONFIG,
 	PixiCursorOverlay,
 	preloadCursorAssets,
 } from "@/components/video-editor/videoPlayback/cursorRenderer";
+import type { MotionBlurFilter } from "@/lib/exporter/motionBlurFilter";
 import { createVideoBlurFilters } from "@/lib/exporter/videoBlurFilters";
+import type { ZoomBlurFilter } from "@/lib/exporter/zoomBlurFilter";
 import {
 	destroyPixiApplication,
 	initializePixiApplicationWithTimeout,
@@ -209,12 +217,9 @@ export class FrameScene {
 		await this.context.background.setupBackground();
 		await this.context.webcamMedia.setupWebcamSource();
 
-		this.context.annotations.annotationScaleFactor =
-			this.context.annotations.calculateAnnotationScaleFactor();
 		this.context.annotations.annotationAssets = await preloadAnnotationAssets(
 			this.context.config.annotationRegions ?? [],
 		);
-		await this.context.annotations.setupAnnotationLayer();
 		this.context.captions.setupCaptionResources();
 
 		if (this.shouldUseZoomMotionBlur()) {
@@ -245,11 +250,26 @@ export class FrameScene {
 			powerPreference: "high-performance" as const,
 		};
 
-		const preferredRenderBackend = this.context.config.preferredRenderBackend;
+		const { forceWebgl, preferredRenderBackend } = this.context.config;
+		// Pixi can probe WebGPU even when the requested preference is WebGL.
+		if (forceWebgl && !isWebGLSupported(baseOptions.failIfMajorPerformanceCaveat)) {
+			throw new Error(
+				summarizeRendererAttempts([
+					{
+						backend: "webgl",
+						message: "WebGL runtime is unavailable in this environment.",
+					},
+				]),
+			);
+		}
+
 		// WebGPU is opt-in: some Chromium runtimes expose navigator.gpu but fail
 		// inside Pixi's bind-group path during rendering.
-		const backendOrder: ExportRenderBackend[] =
-			preferredRenderBackend === "webgpu" ? ["webgpu", "webgl"] : ["webgl", "webgpu"];
+		const backendOrder: ExportRenderBackend[] = forceWebgl
+			? ["webgl"]
+			: preferredRenderBackend === "webgpu"
+				? ["webgpu", "webgl"]
+				: ["webgl", "webgpu"];
 		const failures: PixiRendererAttempt[] = [];
 
 		for (const backend of backendOrder) {
@@ -302,7 +322,7 @@ export class FrameScene {
 					? "renderer backend unavailable in this runtime"
 					: "renderer init failed";
 				console.warn(
-					`[FrameRenderer] ${backend} export renderer unavailable (${rendererMessage}) after ${elapsed}ms; trying next backend:`,
+					`[FrameRenderer] ${backend} export renderer unavailable (${rendererMessage}) after ${elapsed}ms:`,
 					error,
 				);
 				destroyPixiApplication(app, `${backend} export renderer initialization`);

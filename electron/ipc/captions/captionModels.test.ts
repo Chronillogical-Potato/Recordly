@@ -15,21 +15,34 @@ const state = vi.hoisted(() => ({
 	delay: false,
 	respond: undefined as (() => void) | undefined,
 }));
-vi.mock("electron", () => ({ app: { getPath: () => state.userData } }));
-vi.mock("node:https", () => ({
-	get: (url: string, _options: unknown, callback: (response: unknown) => void) => {
-		state.requests.push(url);
-		const request = Object.assign(new EventEmitter(), { destroy: vi.fn() });
-		const respond = () =>
-			callback(
-				Object.assign(Readable.from([Buffer.from(state.body)]), {
-					statusCode: state.status,
-					headers: { location: state.location },
-				}),
-			);
-		if (state.delay) state.respond = respond;
-		else queueMicrotask(respond);
-		return request;
+vi.mock("electron", () => ({
+	app: { getPath: () => state.userData },
+	session: { fromPartition: () => ({ setProxy: vi.fn() }) },
+	net: {
+		request: ({ url }: { url: string }) => {
+			state.requests.push(url);
+			const request = Object.assign(new EventEmitter(), {
+				abort: vi.fn(),
+				end() {
+					const respond = () => {
+						if (state.location) {
+							request.emit("redirect", state.status, "GET", state.location);
+							return;
+						}
+						request.emit(
+							"response",
+							Object.assign(Readable.from([Buffer.from(state.body)]), {
+								statusCode: state.status,
+								headers: {},
+							}),
+						);
+					};
+					if (state.delay) state.respond = respond;
+					else queueMicrotask(respond);
+				},
+			});
+			return request;
+		},
 	},
 }));
 
@@ -46,6 +59,7 @@ import {
 const sender = () =>
 	({ isDestroyed: () => false, send: vi.fn() }) as unknown as Electron.WebContents;
 beforeEach(async () => {
+	vi.stubEnv("https_proxy", "http://test-proxy.invalid");
 	state.userData = await fs.mkdtemp(path.join(os.tmpdir(), "recordly-caption-model-test-"));
 	state.requests = [];
 	state.body = "truncated";
@@ -55,6 +69,7 @@ beforeEach(async () => {
 	state.respond = undefined;
 });
 afterEach(async () => {
+	vi.unstubAllEnvs();
 	await fs.rm(state.userData, { recursive: true, force: true });
 });
 async function installed(id: "whisper-base" | "whisper-small") {
@@ -116,6 +131,36 @@ it("shares one download across windows and refuses deletion until it finishes", 
 		"caption-model-download-progress",
 		expect.objectContaining({ modelId: "whisper-small", status: "error" }),
 	);
+	expect(second.send).toHaveBeenCalledWith(
+		"caption-model-download-progress",
+		expect.objectContaining({ modelId: "whisper-small", status: "error" }),
+	);
+});
+it("continues shared model download for remaining windows when one window closes mid-download", async () => {
+	state.delay = true;
+	let firstDestroyed = false;
+	const first = {
+		isDestroyed: () => firstDestroyed,
+		send: vi.fn(() => {
+			if (firstDestroyed) throw new Error("Object has been destroyed");
+		}),
+	} as unknown as Electron.WebContents;
+	const second = sender();
+	const a = downloadCaptionModel("whisper-small", first);
+	const b = downloadCaptionModel("whisper-small", second);
+	const results = Promise.allSettled([a, b]);
+	await vi.waitFor(() => expect(state.respond).toBeTypeOf("function"));
+
+	firstDestroyed = true;
+	state.respond!();
+
+	expect(state.requests).toHaveLength(1);
+	for (const result of await results) {
+		expect(result).toMatchObject({
+			status: "rejected",
+			reason: expect.objectContaining({ message: expect.stringContaining("integrity") }),
+		});
+	}
 	expect(second.send).toHaveBeenCalledWith(
 		"caption-model-download-progress",
 		expect.objectContaining({ modelId: "whisper-small", status: "error" }),

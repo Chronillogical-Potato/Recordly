@@ -256,6 +256,37 @@ describe("AudioProcessor offline render preparation", () => {
 		expect(renderAndMuxOfflineAudio).not.toHaveBeenCalled();
 	});
 
+	it("renders single sidecar audio offline when its demuxer cannot read the track", async () => {
+		const processor = new AudioProcessor() as unknown as OfflineRenderTestHarness;
+		const sidecar = "/tmp/recording.system.wav";
+		const getDecoderConfig = vi.fn().mockRejectedValue(new Error("Cannot open input file"));
+		const destroy = vi.fn();
+		vi.spyOn(processor, "loadAudioFileDemuxer").mockResolvedValue({
+			getDecoderConfig,
+			destroy,
+		});
+		const renderAndMuxOfflineAudio = vi
+			.spyOn(processor, "renderAndMuxOfflineAudio")
+			.mockImplementation(async () => {
+				expect(destroy).toHaveBeenCalledOnce();
+			});
+
+		await processor.process(
+			null,
+			{} as never,
+			"file:///tmp/recording.mp4",
+			[],
+			[],
+			undefined,
+			[],
+			[sidecar],
+		);
+
+		expect(getDecoderConfig).toHaveBeenCalledWith("audio");
+		expect(renderAndMuxOfflineAudio).toHaveBeenCalledOnce();
+		expect(renderAndMuxOfflineAudio.mock.calls[0]?.[4]).toEqual([sidecar]);
+	});
+
 	it("uses recorded companion start-delay metadata instead of inferring from duration gap", async () => {
 		const processor = new AudioProcessor() as unknown as OfflineRenderTestHarness;
 		const mainBuffer = { duration: 600, numberOfChannels: 2 } as AudioBuffer;
@@ -393,5 +424,47 @@ describe("AudioProcessor offline render preparation", () => {
 				globalThis as unknown as { OfflineAudioContext: typeof OfflineAudioContext }
 			).OfflineAudioContext = originalOfflineAudioContext;
 		}
+	});
+});
+
+describe("AudioProcessor passthroughAudioStream", () => {
+	class TestAudioProcessor extends AudioProcessor {
+		passthrough = this.passthroughAudioStream;
+	}
+
+	it("preserves non-zero initial audio timestamps without offsetting", async () => {
+		const processor = new TestAudioProcessor();
+		const sentChunks: EncodedAudioChunk[] = [];
+		const muxer = {
+			addAudioChunk: vi.fn().mockImplementation(async (chunk: EncodedAudioChunk) => {
+				sentChunks.push(chunk);
+			}),
+		};
+
+		const chunk1 = {
+			timestamp: 2_000_000,
+			type: "key" as const,
+			byteLength: 10,
+			copyTo: vi.fn(),
+		} as unknown as EncodedAudioChunk;
+
+		const stream = new ReadableStream<EncodedAudioChunk>({
+			start(controller) {
+				controller.enqueue(chunk1);
+				controller.close();
+			},
+		});
+
+		const result = await processor.passthrough(
+			stream,
+			{ codec: "mp4a.40.2", sampleRate: 48_000, numberOfChannels: 2 },
+			muxer as never,
+		);
+
+		expect(result).toBe(true);
+		expect(sentChunks).toHaveLength(1);
+		expect(sentChunks[0].timestamp).toBe(2_000_000);
+		// Direct reference equality: chunk was passed through without cloning
+		expect(sentChunks[0]).toBe(chunk1);
 	});
 });

@@ -166,6 +166,12 @@ export async function startNativeRecorder(
 		// When native mic capture is unavailable or explicitly bypassed,
 		// record mic via browser getUserMedia as a sidecar file.
 		if (nativeResult.microphoneFallbackRequired && microphoneEnabled) {
+			if (useNativeWindowsCapture) {
+				await window.electronAPI.beginWindowsRecordingCursorCapture?.().catch((error) => {
+					console.warn("Could not start early Windows cursor capture:", error);
+				});
+				if (startWasCancelled()) return "finished";
+			}
 			void logNativeCaptureDiagnostics("start-browser-microphone-fallback");
 			console.info("Using browser microphone processing for this recording.");
 			const microphoneStarted = await microphoneFallback.start({
@@ -180,6 +186,16 @@ export async function startNativeRecorder(
 			await stopWebcamRecorder();
 			cleanupCapturedMedia();
 			return "finished";
+		}
+
+		if (nativeResult.systemAudioCaptureUnavailable) {
+			toast.warning(
+				translate(
+					"notifications.systemAudioUnavailable",
+					"System audio is not available for this source. Recording will continue without system audio.",
+				),
+				{ id: "recording-system-audio-unavailable", duration: 10000 },
+			);
 		}
 
 		setRecording(true);
